@@ -48,7 +48,7 @@ class PortraitGenerator(Protocol):
 
 
 class DryRunGenerator:
-    """Validates generation contracts without downloading model weights."""
+    """Validate generation contracts without downloading model weights."""
 
     capabilities = GeneratorCapabilities(
         id="dry_run",
@@ -81,7 +81,17 @@ class DryRunGenerator:
         )
 
 
-_GENERATORS: dict[str, PortraitGenerator] = {"dry_run": DryRunGenerator()}
+def _build_registry() -> dict[str, PortraitGenerator]:
+    from app.comfyui import ComfyUIGenerator
+
+    generators: tuple[PortraitGenerator, ...] = (
+        DryRunGenerator(),
+        ComfyUIGenerator(),
+    )
+    return {generator.capabilities.id: generator for generator in generators}
+
+
+_GENERATORS = _build_registry()
 
 
 def list_generators() -> list[dict[str, object]]:
