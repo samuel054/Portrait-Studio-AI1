@@ -11,6 +11,7 @@ from app.comfyui import ComfyUIGenerator
 from app.feedback_api import router as feedback_router
 from app.identity_score import rank_identity_first_candidates
 from app.likeness import InsightFaceAdapter
+from app.refinement_api import router as refinement_router
 from app.render_api import router as render_router
 
 router = APIRouter(prefix="/v1/candidate-sessions", tags=["candidate-selection"])
@@ -107,3 +108,4 @@ def select_candidate(
 
 router.include_router(render_router)
 router.include_router(feedback_router)
+router.include_router(refinement_router)
