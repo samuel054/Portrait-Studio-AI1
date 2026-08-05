@@ -8,6 +8,26 @@ from app.generators import GenerationRequest
 from app.planner import build_portrait_plan
 
 
+class FakeHeaders:
+    def get_content_type(self) -> str:
+        return "image/png"
+
+
+class FakeResponse:
+    def __init__(self, body: bytes, content_type: bool = False) -> None:
+        self.body = body
+        self.headers = FakeHeaders() if content_type else FakeHeaders()
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
 def test_comfyui_payload_replaces_workflow_tokens(tmp_path: Path) -> None:
     workflow_path = tmp_path / "workflow.json"
     workflow_path.write_text(
@@ -60,3 +80,47 @@ def test_comfyui_missing_workflow_is_reported(tmp_path: Path) -> None:
         assert "workflow not found" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
+
+
+def test_comfyui_unknown_job_is_queued(monkeypatch) -> None:
+    generator = ComfyUIGenerator()
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_args, **_kwargs: FakeResponse(b"{}"),
+    )
+
+    result = generator.get_job("prompt-1")
+
+    assert result.status == "queued"
+    assert result.images == ()
+
+
+def test_comfyui_completed_job_returns_base64_images(monkeypatch) -> None:
+    history = {
+        "prompt-1": {
+            "status": {"completed": True, "status_str": "success"},
+            "outputs": {
+                "9": {
+                    "images": [
+                        {"filename": "portrait.png", "subfolder": "", "type": "output"}
+                    ]
+                }
+            },
+        }
+    }
+
+    def fake_urlopen(request, **_kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        if "/history/" in url:
+            return FakeResponse(json.dumps(history).encode("utf-8"))
+        if "/view?" in url:
+            return FakeResponse(b"png-bytes", content_type=True)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    result = ComfyUIGenerator().get_job("prompt-1")
+
+    assert result.status == "completed"
+    assert len(result.images) == 1
+    assert result.images[0].filename == "portrait.png"
+    assert result.images[0].image_base64 == "cG5nLWJ5dGVz"
