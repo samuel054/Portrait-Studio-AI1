@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.candidate_sessions import candidate_session_store
 from app.comfyui import ComfyUIGenerator
+from app.feedback_api import router as feedback_router
 from app.identity_score import rank_identity_first_candidates
 from app.likeness import InsightFaceAdapter
 from app.render_api import router as render_router
@@ -105,3 +106,4 @@ def select_candidate(
 
 
 router.include_router(render_router)
+router.include_router(feedback_router)
