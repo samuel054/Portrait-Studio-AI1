@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.candidate_sessions import candidate_session_store
 from app.feedback import feedback_store
 
-router = APIRouter(prefix="/v1/candidate-sessions", tags=["candidate-feedback"])
+router = APIRouter(tags=["candidate-feedback"])
 
 
 class CandidateFeedbackRequest(BaseModel):
