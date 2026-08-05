@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
@@ -8,10 +9,11 @@ from app.analyzer import analyze_image
 from app.enhancer import enhance_image
 from app.identity import analyze_identity
 
-app = FastAPI(title="Portrait Studio AI", version="0.3.0")
+app = FastAPI(title="Portrait Studio AI", version="0.3.1")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
+ImageUpload = Annotated[UploadFile, File()]
 
 
 async def _read_upload(file: UploadFile) -> bytes:
@@ -32,7 +34,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/v1/analyze")
-async def analyze(file: UploadFile = File(...)) -> dict[str, object]:
+async def analyze(file: ImageUpload) -> dict[str, object]:
     data = await _read_upload(file)
 
     try:
@@ -58,7 +60,7 @@ async def analyze(file: UploadFile = File(...)) -> dict[str, object]:
 
 
 @app.post("/v1/enhance")
-async def enhance(file: UploadFile = File(...)) -> dict[str, object]:
+async def enhance(file: ImageUpload) -> dict[str, object]:
     data = await _read_upload(file)
 
     try:
