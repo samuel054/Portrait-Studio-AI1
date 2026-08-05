@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.candidate_sessions import candidate_session_store
 from app.final_render import render_selected_candidate
 
-router = APIRouter(prefix="/v1/candidate-sessions", tags=["final-render"])
+router = APIRouter(tags=["final-render"])
 
 
 class FinalRenderRequest(BaseModel):
