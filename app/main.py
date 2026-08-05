@@ -14,7 +14,7 @@ from app.identity import analyze_identity
 from app.planner import build_portrait_plan
 from app.styles import get_style, list_styles
 
-app = FastAPI(title="Portrait Studio AI", version="0.9.0")
+app = FastAPI(title="Portrait Studio AI", version="0.10.0")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -72,6 +72,81 @@ def style_detail(style_id: str) -> dict[str, object]:
 def generators() -> dict[str, object]:
     items = list_generators()
     return {"count": len(items), "generators": items}
+
+
+@app.post("/v1/portrait-jobs")
+async def create_portrait_job(
+    file: ImageUpload,
+    style_id: Annotated[str, Form()],
+    crop: Annotated[str, Form()] = "original",
+    background: Annotated[str, Form()] = "keep",
+    output_type: Annotated[str, Form()] = "social",
+    preserve_pose: Annotated[bool, Form()] = True,
+    preserve_clothing: Annotated[bool, Form()] = True,
+    candidate_count: Annotated[int, Form(ge=1, le=4)] = 4,
+    seed: Annotated[int | None, Form()] = None,
+) -> dict[str, object]:
+    data = await _read_upload(file)
+
+    try:
+        image_report = analyze_image(data)
+        identity_report = analyze_identity(data)
+        if identity_report.identity_readiness in {"not_ready", "needs_better_photo"}:
+            raise ValueError("Upload a better photo with a clearly visible face before generation.")
+
+        working_bytes = data
+        enhancement_report = None
+        if image_report.needs_enhancement:
+            working_bytes, enhancement_report = enhance_image(data)
+            if enhancement_report.identity_after.identity_readiness in {
+                "not_ready",
+                "needs_better_photo",
+            }:
+                raise ValueError("Enhancement could not produce a generation-ready identity image.")
+
+        plan = build_portrait_plan(
+            style_id=style_id,
+            crop=crop,
+            background=background,
+            output_type=output_type,
+            preserve_pose=preserve_pose,
+            preserve_clothing=preserve_clothing,
+        )
+        comfyui = ComfyUIGenerator()
+        upload = comfyui.upload_image(
+            image_bytes=working_bytes,
+            filename=file.filename or "portrait.png",
+            content_type="image/png" if enhancement_report else (file.content_type or "image/png"),
+            subfolder="portrait-studio-ai",
+            overwrite=False,
+        )
+        generation = run_generation(
+            "comfyui",
+            GenerationRequest(
+                plan=plan,
+                image_reference=upload.image_reference,
+                seed=seed,
+                candidate_count=candidate_count,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "job": {
+            "filename": file.filename,
+            "analysis": image_report.to_dict(),
+            "identity": identity_report.to_dict(),
+            "enhancement_applied": enhancement_report is not None,
+            "enhancement": enhancement_report.to_dict() if enhancement_report else None,
+            "plan": plan.to_dict(),
+            "image_reference": upload.image_reference,
+            "generation": generation.to_dict(),
+        },
+        "next_step": "poll_generation",
+    }
 
 
 @app.post("/v1/comfyui/images")
