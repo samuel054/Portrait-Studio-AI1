@@ -1,19 +1,19 @@
 # Portrait Studio AI
 
-Identity-first portrait creation. The current working slice accepts a photo, validates it, measures image quality, detects frontal faces, and produces an identity-readiness report before style generation.
+Identity-first portrait creation. The current working slice analyzes a photo, detects faces, measures identity readiness, and can apply conservative non-generative enhancement before style generation.
 
 ## Current build
 
 - FastAPI service
 - JPG, PNG, and WEBP upload validation
-- Resolution and megapixel analysis
-- Blur and lighting estimation
+- Resolution, megapixel, blur, and lighting analysis
 - OpenCV frontal-face detection
 - Multiple-face bounding boxes and relative face-size measurement
-- Identity readiness and identity-risk classification
-- Helpful guidance when a photo is unsuitable
+- Identity-readiness and identity-risk classification
+- Identity-safe enhancement using lighting correction, gentle denoising, conservative sharpening, and non-generative upscaling
+- Before-and-after quality and face-count reports
 - Automatic routing to `enhance`, `request_better_photo`, or `style_selection`
-- Unit tests for image and identity analysis
+- Unit tests for analysis, identity detection, and enhancement
 
 ## Run locally
 
@@ -39,48 +39,29 @@ curl -X POST http://127.0.0.1:8000/v1/analyze \
   -F "file=@portrait.jpg"
 ```
 
-Example response:
+## Enhance a portrait
 
-```json
-{
-  "filename": "portrait.jpg",
-  "content_type": "image/jpeg",
-  "analysis": {
-    "width": 1920,
-    "height": 1080,
-    "megapixels": 2.07,
-    "blur_score": 186.42,
-    "blur_level": "low",
-    "brightness": 132.7,
-    "lighting": "good",
-    "needs_enhancement": false
-  },
-  "identity": {
-    "face_count": 1,
-    "faces": [
-      {
-        "x": 630,
-        "y": 180,
-        "width": 420,
-        "height": 420,
-        "area_ratio": 0.0851
-      }
-    ],
-    "largest_face_ratio": 0.0851,
-    "identity_readiness": "ready",
-    "identity_risk": "low",
-    "guidance": [
-      "Face visibility is suitable for identity analysis."
-    ]
-  },
-  "next_step": "style_selection"
-}
+```bash
+curl -X POST http://127.0.0.1:8000/v1/enhance \
+  -F "file=@portrait.jpg" \
+  -o enhancement-response.json
 ```
+
+The enhancement response contains:
+
+- the enhanced PNG encoded as Base64,
+- operations applied,
+- before-and-after quality measurements,
+- before-and-after identity-readiness reports,
+- a face-count preservation check,
+- and the recommended next step.
+
+The enhancer deliberately avoids generative face restoration. It improves presentation without inventing facial details or replacing the person's identity.
 
 ## Privacy boundary
 
-This build analyzes the uploaded bytes in memory and returns a report. It does not create a reusable face identity or permanently store biometric data.
+Uploaded bytes are processed in memory. This build does not create a reusable face identity or permanently store biometric data.
 
 ## Next build target
 
-Add automatic, identity-safe photo enhancement with before-and-after quality measurements.
+Add the first curated style-selection contract and a prompt recipe builder for identity-preserving illustration generation.
