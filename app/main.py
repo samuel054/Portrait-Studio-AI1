@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from typing import Annotated
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.analyzer import analyze_image
@@ -14,7 +14,7 @@ from app.identity import analyze_identity
 from app.planner import build_portrait_plan
 from app.styles import get_style, list_styles
 
-app = FastAPI(title="Portrait Studio AI", version="0.8.0")
+app = FastAPI(title="Portrait Studio AI", version="0.9.0")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -72,6 +72,28 @@ def style_detail(style_id: str) -> dict[str, object]:
 def generators() -> dict[str, object]:
     items = list_generators()
     return {"count": len(items), "generators": items}
+
+
+@app.post("/v1/comfyui/images")
+async def upload_comfyui_image(
+    file: ImageUpload,
+    subfolder: Annotated[str, Form()] = "portrait-studio-ai",
+    overwrite: Annotated[bool, Form()] = False,
+) -> dict[str, object]:
+    data = await _read_upload(file)
+    try:
+        result = ComfyUIGenerator().upload_image(
+            image_bytes=data,
+            filename=file.filename or "portrait.png",
+            content_type=file.content_type or "application/octet-stream",
+            subfolder=subfolder.strip().strip("/"),
+            overwrite=overwrite,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"upload": result.to_dict(), "next_step": "generation"}
 
 
 @app.get("/v1/generations/{prompt_id}")
