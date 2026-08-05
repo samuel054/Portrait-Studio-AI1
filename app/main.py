@@ -3,13 +3,14 @@ from __future__ import annotations
 import base64
 from typing import Annotated
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
 from app.analyzer import analyze_image
 from app.enhancer import enhance_image
 from app.identity import analyze_identity
+from app.styles import get_style, list_styles
 
-app = FastAPI(title="Portrait Studio AI", version="0.3.1")
+app = FastAPI(title="Portrait Studio AI", version="0.4.0")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -31,6 +32,20 @@ async def _read_upload(file: UploadFile) -> bytes:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/styles")
+def styles(category: str | None = Query(default=None)) -> dict[str, object]:
+    items = list_styles(category)
+    return {"count": len(items), "styles": items}
+
+
+@app.get("/v1/styles/{style_id}")
+def style_detail(style_id: str) -> dict[str, object]:
+    style = get_style(style_id)
+    if style is None:
+        raise HTTPException(status_code=404, detail="Style not found.")
+    return style.to_dict()
 
 
 @app.post("/v1/analyze")
