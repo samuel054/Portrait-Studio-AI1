@@ -7,13 +7,14 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.analyzer import analyze_image
+from app.comfyui import ComfyUIGenerator
 from app.enhancer import enhance_image
 from app.generators import GenerationRequest, list_generators, run_generation
 from app.identity import analyze_identity
 from app.planner import build_portrait_plan
 from app.styles import get_style, list_styles
 
-app = FastAPI(title="Portrait Studio AI", version="0.6.0")
+app = FastAPI(title="Portrait Studio AI", version="0.8.0")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -71,6 +72,24 @@ def style_detail(style_id: str) -> dict[str, object]:
 def generators() -> dict[str, object]:
     items = list_generators()
     return {"count": len(items), "generators": items}
+
+
+@app.get("/v1/generations/{prompt_id}")
+def generation_status(
+    prompt_id: str,
+    include_images: bool = Query(default=True),
+) -> dict[str, object]:
+    try:
+        result = ComfyUIGenerator().get_job(prompt_id, include_images=include_images)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    next_step = "select_candidate" if result.status == "completed" else "poll_generation"
+    if result.status == "failed":
+        next_step = "retry_generation"
+    return {"generation": result.to_dict(), "next_step": next_step}
 
 
 @app.post("/v1/plans")
