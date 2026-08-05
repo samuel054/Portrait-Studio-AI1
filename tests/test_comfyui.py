@@ -82,6 +82,22 @@ def test_comfyui_missing_workflow_is_reported(tmp_path: Path) -> None:
         raise AssertionError("Expected RuntimeError")
 
 
+def test_comfyui_upload_returns_reference(monkeypatch) -> None:
+    response = {"name": "portrait.png", "subfolder": "portrait-studio-ai", "type": "input"}
+
+    def fake_urlopen(request, **_kwargs):
+        assert request.full_url.endswith("/upload/image")
+        assert b"portrait.png" in request.data
+        assert b"image/png" in request.data
+        return FakeResponse(json.dumps(response).encode("utf-8"))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    result = ComfyUIGenerator().upload_image(b"png-bytes", "portrait.png", "image/png")
+
+    assert result.image_reference == "portrait-studio-ai/portrait.png"
+    assert result.image_type == "input"
+
+
 def test_comfyui_unknown_job_is_queued(monkeypatch) -> None:
     generator = ComfyUIGenerator()
     monkeypatch.setattr(
