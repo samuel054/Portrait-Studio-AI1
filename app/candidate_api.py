@@ -10,6 +10,7 @@ from app.candidate_sessions import candidate_session_store
 from app.comfyui import ComfyUIGenerator
 from app.identity_score import rank_identity_first_candidates
 from app.likeness import InsightFaceAdapter
+from app.render_api import router as render_router
 
 router = APIRouter(prefix="/v1/candidate-sessions", tags=["candidate-selection"])
 
@@ -101,3 +102,6 @@ def select_candidate(
         "selected_candidate": selected.to_dict(include_image=True),
         "next_step": "final_render",
     }
+
+
+router.include_router(render_router)
