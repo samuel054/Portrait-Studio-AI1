@@ -1,8 +1,9 @@
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from app.analyzer import analyze_image
+from app.identity import analyze_identity
 
-app = FastAPI(title="Portrait Studio AI", version="0.1.0")
+app = FastAPI(title="Portrait Studio AI", version="0.2.0")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -25,13 +26,22 @@ async def analyze(file: UploadFile = File(...)) -> dict[str, object]:
         raise HTTPException(status_code=413, detail="The image exceeds the 20 MB limit.")
 
     try:
-        report = analyze_image(data)
-    except ValueError as exc:
+        image_report = analyze_image(data)
+        identity_report = analyze_identity(data)
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if image_report.needs_enhancement:
+        next_step = "enhance"
+    elif identity_report.identity_readiness in {"not_ready", "needs_better_photo"}:
+        next_step = "request_better_photo"
+    else:
+        next_step = "style_selection"
 
     return {
         "filename": file.filename,
         "content_type": file.content_type,
-        "analysis": report.to_dict(),
-        "next_step": "enhance" if report.needs_enhancement else "identity_analysis",
+        "analysis": image_report.to_dict(),
+        "identity": identity_report.to_dict(),
+        "next_step": next_step,
     }
