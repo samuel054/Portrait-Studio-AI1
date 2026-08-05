@@ -3,7 +3,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-import app.identity as identity
+from app import identity
 
 
 class FakeDetector:
