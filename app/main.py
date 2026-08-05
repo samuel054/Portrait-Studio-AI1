@@ -4,17 +4,28 @@ import base64
 from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 
 from app.analyzer import analyze_image
 from app.enhancer import enhance_image
 from app.identity import analyze_identity
+from app.planner import build_portrait_plan
 from app.styles import get_style, list_styles
 
-app = FastAPI(title="Portrait Studio AI", version="0.4.0")
+app = FastAPI(title="Portrait Studio AI", version="0.5.0")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
 ImageUpload = Annotated[UploadFile, File()]
+
+
+class PortraitPlanRequest(BaseModel):
+    style_id: str
+    crop: str = "original"
+    background: str = "keep"
+    output_type: str = "social"
+    preserve_pose: bool = True
+    preserve_clothing: bool = True
 
 
 async def _read_upload(file: UploadFile) -> bytes:
@@ -46,6 +57,22 @@ def style_detail(style_id: str) -> dict[str, object]:
     if style is None:
         raise HTTPException(status_code=404, detail="Style not found.")
     return style.to_dict()
+
+
+@app.post("/v1/plans")
+def create_plan(request: PortraitPlanRequest) -> dict[str, object]:
+    try:
+        plan = build_portrait_plan(
+            style_id=request.style_id,
+            crop=request.crop,
+            background=request.background,
+            output_type=request.output_type,
+            preserve_pose=request.preserve_pose,
+            preserve_clothing=request.preserve_clothing,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"plan": plan.to_dict(), "next_step": "generation"}
 
 
 @app.post("/v1/analyze")
