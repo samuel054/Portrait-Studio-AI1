@@ -6,6 +6,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -29,6 +30,25 @@ class ComfyUIConfig:
             workflow_path=os.getenv("COMFYUI_WORKFLOW_PATH", cls.workflow_path),
             timeout_seconds=float(os.getenv("COMFYUI_TIMEOUT_SECONDS", cls.timeout_seconds)),
         )
+
+
+@dataclass(frozen=True)
+class ComfyUIUploadResult:
+    name: str
+    subfolder: str
+    image_type: str
+
+    @property
+    def image_reference(self) -> str:
+        return f"{self.subfolder}/{self.name}" if self.subfolder else self.name
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "subfolder": self.subfolder,
+            "type": self.image_type,
+            "image_reference": self.image_reference,
+        }
 
 
 @dataclass(frozen=True)
@@ -116,6 +136,52 @@ class ComfyUIGenerator:
         if not isinstance(payload, dict):
             raise RuntimeError("ComfyUI returned an unexpected response.")
         return payload
+
+    def upload_image(
+        self,
+        image_bytes: bytes,
+        filename: str,
+        content_type: str,
+        subfolder: str = "portrait-studio-ai",
+        overwrite: bool = False,
+    ) -> ComfyUIUploadResult:
+        if not image_bytes:
+            raise ValueError("Image data is required.")
+        safe_name = os.path.basename(filename.strip())
+        if not safe_name:
+            raise ValueError("A valid filename is required.")
+
+        boundary = f"portrait-{uuid.uuid4().hex}"
+        parts = [
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{safe_name}\"\r\nContent-Type: {content_type}\r\n\r\n".encode(),
+            image_bytes,
+            f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"subfolder\"\r\n\r\n{subfolder}\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"overwrite\"\r\n\r\n{str(overwrite).lower()}\r\n".encode(),
+            f"--{boundary}--\r\n".encode(),
+        ]
+        request = urllib.request.Request(
+            f"{self.config.base_url}/upload/image",
+            data=b"".join(parts),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"ComfyUI is unavailable at '{self.config.base_url}'."
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("ComfyUI returned an invalid upload response.") from exc
+
+        if not isinstance(payload, dict) or not payload.get("name"):
+            raise RuntimeError("ComfyUI did not confirm the uploaded image.")
+        return ComfyUIUploadResult(
+            name=str(payload["name"]),
+            subfolder=str(payload.get("subfolder", "")),
+            image_type=str(payload.get("type", "input")),
+        )
 
     def build_payload(self, request: GenerationRequest) -> dict[str, object]:
         workflow = self._load_workflow()
