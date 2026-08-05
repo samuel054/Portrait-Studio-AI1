@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from app.generators import (
@@ -27,6 +29,34 @@ class ComfyUIConfig:
             workflow_path=os.getenv("COMFYUI_WORKFLOW_PATH", cls.workflow_path),
             timeout_seconds=float(os.getenv("COMFYUI_TIMEOUT_SECONDS", cls.timeout_seconds)),
         )
+
+
+@dataclass(frozen=True)
+class ComfyUIImage:
+    filename: str
+    subfolder: str
+    image_type: str
+    content_type: str
+    image_base64: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ComfyUIJobResult:
+    prompt_id: str
+    status: str
+    images: tuple[ComfyUIImage, ...]
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "prompt_id": self.prompt_id,
+            "status": self.status,
+            "images": [image.to_dict() for image in self.images],
+            "error": self.error,
+        }
 
 
 class ComfyUIGenerator:
@@ -69,6 +99,23 @@ class ComfyUIGenerator:
         if isinstance(value, str) and value in tokens:
             return tokens[value]
         return value
+
+    def _request_json(self, path: str) -> dict[str, Any]:
+        try:
+            with urllib.request.urlopen(
+                f"{self.config.base_url}{path}",
+                timeout=self.config.timeout_seconds,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"ComfyUI is unavailable at '{self.config.base_url}'."
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("ComfyUI returned an invalid JSON response.") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("ComfyUI returned an unexpected response.")
+        return payload
 
     def build_payload(self, request: GenerationRequest) -> dict[str, object]:
         workflow = self._load_workflow()
@@ -122,4 +169,78 @@ class ComfyUIGenerator:
                 "seed": request.seed,
             },
             message="Portrait generation was queued in ComfyUI.",
+        )
+
+    def _download_image(self, metadata: dict[str, Any]) -> ComfyUIImage:
+        filename = str(metadata.get("filename", ""))
+        if not filename:
+            raise RuntimeError("ComfyUI image output is missing a filename.")
+        subfolder = str(metadata.get("subfolder", ""))
+        image_type = str(metadata.get("type", "output"))
+        query = urllib.parse.urlencode(
+            {"filename": filename, "subfolder": subfolder, "type": image_type}
+        )
+        try:
+            with urllib.request.urlopen(
+                f"{self.config.base_url}/view?{query}",
+                timeout=self.config.timeout_seconds,
+            ) as response:
+                image_bytes = response.read()
+                content_type = response.headers.get_content_type()
+        except urllib.error.URLError as exc:
+            raise RuntimeError("ComfyUI generated an image but it could not be downloaded.") from exc
+
+        return ComfyUIImage(
+            filename=filename,
+            subfolder=subfolder,
+            image_type=image_type,
+            content_type=content_type,
+            image_base64=base64.b64encode(image_bytes).decode("ascii"),
+        )
+
+    def get_job(self, prompt_id: str, include_images: bool = True) -> ComfyUIJobResult:
+        normalized = prompt_id.strip()
+        if not normalized:
+            raise ValueError("prompt_id is required.")
+
+        history = self._request_json(f"/history/{urllib.parse.quote(normalized)}")
+        job = history.get(normalized)
+        if job is None:
+            return ComfyUIJobResult(prompt_id=normalized, status="queued", images=())
+        if not isinstance(job, dict):
+            raise RuntimeError("ComfyUI returned malformed job history.")
+
+        status_payload = job.get("status", {})
+        status_text = "completed"
+        error: str | None = None
+        if isinstance(status_payload, dict):
+            completed = status_payload.get("completed")
+            status_text = str(status_payload.get("status_str", "completed"))
+            if completed is False and status_text == "error":
+                error = "ComfyUI reported a generation error."
+
+        images: list[ComfyUIImage] = []
+        outputs = job.get("outputs", {})
+        if include_images and isinstance(outputs, dict):
+            for node_output in outputs.values():
+                if not isinstance(node_output, dict):
+                    continue
+                for metadata in node_output.get("images", []):
+                    if isinstance(metadata, dict):
+                        images.append(self._download_image(metadata))
+
+        if error:
+            final_status = "failed"
+        elif images:
+            final_status = "completed"
+        elif status_text in {"running", "executing"}:
+            final_status = "running"
+        else:
+            final_status = "processing"
+
+        return ComfyUIJobResult(
+            prompt_id=normalized,
+            status=final_status,
+            images=tuple(images),
+            error=error,
         )
