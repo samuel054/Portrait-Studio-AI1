@@ -59,15 +59,17 @@ def _ranking() -> IdentityFirstRanking:
     )
 
 
-def test_session_only_exposes_safe_candidates_in_rank_order() -> None:
-    store = CandidateSessionStore()
-    job = ComfyUIJobResult(
+def _job() -> ComfyUIJobResult:
+    return ComfyUIJobResult(
         prompt_id="prompt-1",
         status="completed",
         images=(_image("zero.png"), _image("one.png"), _image("two.png")),
     )
 
-    session = store.create(job, _ranking())
+
+def test_session_only_exposes_safe_candidates_in_rank_order(tmp_path) -> None:
+    store = CandidateSessionStore(tmp_path / "candidates.db")
+    session = store.create(_job(), _ranking())
 
     assert [item.id for item in session.candidates] == ["A", "B"]
     assert [item.source_index for item in session.candidates] == [1, 0]
@@ -75,16 +77,9 @@ def test_session_only_exposes_safe_candidates_in_rank_order() -> None:
     assert all(item.source_index != 2 for item in session.candidates)
 
 
-def test_user_can_select_an_available_candidate() -> None:
-    store = CandidateSessionStore()
-    session = store.create(
-        ComfyUIJobResult(
-            prompt_id="prompt-1",
-            status="completed",
-            images=(_image("zero.png"), _image("one.png"), _image("two.png")),
-        ),
-        _ranking(),
-    )
+def test_user_can_select_an_available_candidate(tmp_path) -> None:
+    store = CandidateSessionStore(tmp_path / "candidates.db")
+    session = store.create(_job(), _ranking())
 
     selected = store.select(session.id, "b")
 
@@ -92,8 +87,34 @@ def test_user_can_select_an_available_candidate() -> None:
     assert selected.selected_candidate_id == "B"
 
 
-def test_session_refuses_when_every_candidate_is_rejected() -> None:
-    store = CandidateSessionStore()
+def test_session_survives_store_restart(tmp_path) -> None:
+    database_path = tmp_path / "candidates.db"
+    first_store = CandidateSessionStore(database_path)
+    created = first_store.create(_job(), _ranking())
+
+    second_store = CandidateSessionStore(database_path)
+    restored = second_store.get(created.id)
+
+    assert restored.id == created.id
+    assert restored.prompt_id == "prompt-1"
+    assert [candidate.filename for candidate in restored.candidates] == ["one.png", "zero.png"]
+    assert restored.created_at is not None
+
+
+def test_selection_survives_store_restart(tmp_path) -> None:
+    database_path = tmp_path / "candidates.db"
+    first_store = CandidateSessionStore(database_path)
+    created = first_store.create(_job(), _ranking())
+    first_store.select(created.id, "A")
+
+    restored = CandidateSessionStore(database_path).get(created.id)
+
+    assert restored.status == "selected"
+    assert restored.selected_candidate_id == "A"
+
+
+def test_session_refuses_when_every_candidate_is_rejected(tmp_path) -> None:
+    store = CandidateSessionStore(tmp_path / "candidates.db")
     ranking = IdentityFirstRanking(
         evaluations=(
             IdentityFirstEvaluation(
