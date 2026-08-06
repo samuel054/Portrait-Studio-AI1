@@ -1,6 +1,6 @@
 [project]
 name = "portrait-studio-ai"
-version = "0.20.0"
+version = "0.21.0"
 description = "Identity-first portrait analysis and generation platform"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,6 +30,7 @@ packages = ["app"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+env = ["PORTRAIT_ENVIRONMENT=test", "PORTRAIT_ENABLE_BACKGROUND_WORKER=false"]
 
 [tool.ruff]
 line-length = 100
