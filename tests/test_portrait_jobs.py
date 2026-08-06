@@ -6,7 +6,10 @@ import cv2
 import numpy as np
 from fastapi.testclient import TestClient
 
+from app.candidate_sessions import CandidateSessionStore
 from app.main import app
+from app.settings import Settings
+from app.workflow_engine import WorkflowEngine
 from app.workflow_jobs import PortraitWorkflowStore
 
 client = TestClient(app)
@@ -50,18 +53,26 @@ class FakeGeneration:
         return {"status": self.status, "request_payload": {"prompt_id": "prompt-1"}}
 
 
-class FakeCompletedGeneration:
-    status = "completed"
-
-    def to_dict(self) -> dict[str, object]:
-        return {"status": self.status, "images": []}
-
-
 def make_image_bytes() -> bytes:
     image = np.full((128, 128, 3), 170, dtype=np.uint8)
     ok, encoded = cv2.imencode(".png", image)
     assert ok
     return encoded.tobytes()
+
+
+def _engine(tmp_path, store: PortraitWorkflowStore) -> WorkflowEngine:
+    settings = Settings(
+        environment="test",
+        portrait_workflow_db=tmp_path / "workflows.db",
+        portrait_candidate_db=tmp_path / "candidates.db",
+        portrait_feedback_db=tmp_path / "feedback.db",
+        enable_background_worker=False,
+    )
+    return WorkflowEngine(
+        workflows=store,
+        candidates=CandidateSessionStore(settings.portrait_candidate_db),
+        settings=settings,
+    )
 
 
 def test_portrait_job_runs_full_pipeline(monkeypatch, tmp_path) -> None:
@@ -89,7 +100,7 @@ def test_portrait_job_runs_full_pipeline(monkeypatch, tmp_path) -> None:
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     payload = response.json()
     assert payload["job"]["status"] == "generating"
     assert payload["job"]["prompt_id"] == "prompt-1"
@@ -100,9 +111,10 @@ def test_portrait_job_runs_full_pipeline(monkeypatch, tmp_path) -> None:
     stored = store.get(payload["job"]["id"])
     assert stored.prompt_id == "prompt-1"
     assert stored.style_id == "soft_lifestyle_illustration"
+    assert stored.payload["_source_image_base64"]
 
 
-def test_portrait_job_status_refreshes_completed_generation(monkeypatch, tmp_path) -> None:
+def test_portrait_job_status_can_read_without_refresh(monkeypatch, tmp_path) -> None:
     store = PortraitWorkflowStore(tmp_path / "workflows.db")
     job = store.create(
         filename="source.png",
@@ -111,24 +123,20 @@ def test_portrait_job_status_refreshes_completed_generation(monkeypatch, tmp_pat
         payload={"generation": {"status": "queued"}},
     )
     monkeypatch.setattr("app.main.portrait_workflow_store", store)
-    monkeypatch.setattr(
-        "app.main.ComfyUIGenerator.get_job",
-        lambda *_args, **_kwargs: FakeCompletedGeneration(),
-    )
+    monkeypatch.setattr("app.main.workflow_engine", _engine(tmp_path, store))
 
-    response = client.get(f"/v1/portrait-jobs/{job.id}")
+    response = client.get(f"/v1/portrait-jobs/{job.id}?refresh=false")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["job"]["status"] == "evaluating"
-    assert payload["job"]["stage"] == "generation_completed"
-    assert payload["next_step"] == "create_candidate_session"
+    assert payload["job"]["status"] == "generating"
+    assert payload["next_step"] == "poll_portrait_job"
 
 
 def test_portrait_job_status_returns_404_for_unknown_job(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "app.main.portrait_workflow_store", PortraitWorkflowStore(tmp_path / "workflows.db")
-    )
+    store = PortraitWorkflowStore(tmp_path / "workflows.db")
+    monkeypatch.setattr("app.main.portrait_workflow_store", store)
+    monkeypatch.setattr("app.main.workflow_engine", _engine(tmp_path, store))
 
     response = client.get("/v1/portrait-jobs/missing")
 
