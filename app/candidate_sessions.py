@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import sqlite3
 import threading
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.comfyui import ComfyUIJobResult
 from app.identity_score import IdentityFirstRanking
+from app.settings import get_settings
 
 
 _CANDIDATE_LABELS = ("A", "B", "C", "D")
@@ -22,7 +22,7 @@ def _utc_now() -> str:
 
 
 def _default_database_path() -> Path:
-    return Path(os.getenv("PORTRAIT_CANDIDATE_DB", "portrait_candidates.db"))
+    return get_settings().portrait_candidate_db
 
 
 @dataclass(frozen=True)
@@ -116,6 +116,10 @@ class CandidateSessionStore:
                 "CREATE INDEX IF NOT EXISTS idx_candidate_sessions_prompt_id "
                 "ON candidate_sessions(prompt_id)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_candidate_sessions_status "
+                "ON candidate_sessions(status)"
+            )
 
     def create(self, job: ComfyUIJobResult, ranking: IdentityFirstRanking) -> CandidateSession:
         if job.status != "completed":
@@ -206,6 +210,16 @@ class CandidateSessionStore:
                 (normalized, timestamp, session_id),
             )
         return self.get(session_id)
+
+    def delete_expired(self, ttl_minutes: int | None = None) -> int:
+        ttl = ttl_minutes or get_settings().portrait_session_ttl_minutes
+        cutoff = (datetime.now(UTC) - timedelta(minutes=ttl)).isoformat()
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM candidate_sessions WHERE updated_at < ?",
+                (cutoff,),
+            )
+            return max(cursor.rowcount, 0)
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> CandidateSession:
