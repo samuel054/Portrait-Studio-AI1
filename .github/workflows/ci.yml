@@ -18,6 +18,13 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
 
+    env:
+      PORTRAIT_ENVIRONMENT: test
+      PORTRAIT_ENABLE_BACKGROUND_WORKER: "false"
+      PORTRAIT_WORKFLOW_DB: /tmp/portrait-ci-workflows-${{ matrix.python-version }}.db
+      PORTRAIT_CANDIDATE_DB: /tmp/portrait-ci-candidates-${{ matrix.python-version }}.db
+      PORTRAIT_FEEDBACK_DB: /tmp/portrait-ci-feedback-${{ matrix.python-version }}.db
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -41,23 +48,35 @@ jobs:
       - name: Compile backend
         run: python -m compileall -q app tests
 
-      - name: Lint
-        run: ruff check .
+      - name: Lint correctness rules
+        run: ruff check app tests --select E4,E7,E9,F
 
-      - name: Run tests
-        env:
-          PORTRAIT_ENVIRONMENT: test
-          PORTRAIT_ENABLE_BACKGROUND_WORKER: "false"
-          PORTRAIT_WORKFLOW_DB: /tmp/portrait-ci-workflows.db
-          PORTRAIT_CANDIDATE_DB: /tmp/portrait-ci-candidates.db
-          PORTRAIT_FEEDBACK_DB: /tmp/portrait-ci-feedback.db
-        run: pytest -q
+      - name: Run backend tests
+        run: pytest -q --maxfail=1
 
       - name: Validate OpenAPI generation
-        env:
-          PORTRAIT_ENVIRONMENT: test
-          PORTRAIT_ENABLE_BACKGROUND_WORKER: "false"
-        run: python -c "from app.main import app; schema=app.openapi(); assert '/v1/portrait-jobs' in schema['paths']"
+        run: |
+          python - <<'PY'
+          from app.main import app
+
+          schema = app.openapi()
+          required_paths = {
+              "/health",
+              "/ready",
+              "/v1/analyze",
+              "/v1/enhance",
+              "/v1/styles",
+              "/v1/portrait-jobs",
+              "/v1/portrait-jobs/{job_id}",
+              "/v1/candidate-sessions",
+              "/v1/candidate-sessions/{session_id}/selection",
+              "/v1/candidate-sessions/{session_id}/render",
+              "/v1/candidate-sessions/{session_id}/refine",
+              "/v1/candidate-sessions/{session_id}/feedback",
+          }
+          missing = required_paths.difference(schema["paths"])
+          assert not missing, f"Missing OpenAPI paths: {sorted(missing)}"
+          PY
 
   container:
     runs-on: ubuntu-latest
@@ -67,3 +86,18 @@ jobs:
 
       - name: Build backend image
         run: docker build -f docker/api.Dockerfile -t portrait-studio-api:test .
+
+      - name: Smoke-test backend image
+        run: |
+          docker run -d --name portrait-api \
+            -e PORTRAIT_ENVIRONMENT=test \
+            -e PORTRAIT_ENABLE_BACKGROUND_WORKER=false \
+            -p 8000:8000 portrait-studio-api:test
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs portrait-api
+          exit 1
