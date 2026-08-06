@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 import uuid
@@ -9,6 +8,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from app.settings import get_settings
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
@@ -32,7 +33,7 @@ def _utc_now() -> str:
 
 
 def _default_database_path() -> Path:
-    return Path(os.getenv("PORTRAIT_WORKFLOW_DB", "portrait_workflows.db"))
+    return get_settings().portrait_workflow_db
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,10 @@ class PortraitWorkflowJob:
     created_at: str
     updated_at: str
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_private: bool = False) -> dict[str, Any]:
+        payload = dict(self.payload)
+        if not include_private:
+            payload = {key: value for key, value in payload.items() if not key.startswith("_")}
         return {
             "id": self.id,
             "status": self.status,
@@ -66,17 +70,17 @@ class PortraitWorkflowJob:
                 if self.error_code or self.error_message
                 else None
             ),
-            "payload": self.payload,
+            "payload": payload,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
 
 
 class PortraitWorkflowStore:
-    """Small persistent workflow store for the local MVP.
+    """Persistent workflow repository for the local MVP.
 
-    SQLite is intentionally hidden behind this repository-style class so the
-    implementation can later move to PostgreSQL without changing API routes.
+    SQLite is hidden behind this class so storage can later move to PostgreSQL
+    without changing API routes or workflow orchestration code.
     """
 
     def __init__(self, database_path: str | Path | None = None) -> None:
@@ -114,6 +118,10 @@ class PortraitWorkflowStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_workflow_prompt_id "
                 "ON portrait_workflow_jobs(prompt_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workflow_status "
+                "ON portrait_workflow_jobs(status)"
             )
 
     def create(
@@ -163,6 +171,18 @@ class PortraitWorkflowStore:
         if row is None:
             raise KeyError(f"Portrait workflow job '{job_id}' was not found.")
         return self._from_row(row)
+
+    def list_active(self, limit: int = 100) -> list[PortraitWorkflowJob]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("Active workflow limit must be between 1 and 1000.")
+        placeholders = ",".join("?" for _ in TERMINAL_STATUSES)
+        query = (
+            "SELECT * FROM portrait_workflow_jobs "
+            f"WHERE status NOT IN ({placeholders}) ORDER BY created_at ASC LIMIT ?"
+        )
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(query, (*sorted(TERMINAL_STATUSES), limit)).fetchall()
+        return [self._from_row(row) for row in rows]
 
     def update(
         self,
