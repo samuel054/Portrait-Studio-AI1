@@ -15,24 +15,62 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
-    app_name: str = "Portrait Studio AI"
-    app_version: str = "0.19.0"
-    environment: str = "development"
-    log_level: str = "INFO"
+    app_name: str = Field(default="Portrait Studio AI", validation_alias="PORTRAIT_APP_NAME")
+    app_version: str = Field(default="0.19.0", validation_alias="PORTRAIT_APP_VERSION")
+    environment: str = Field(default="development", validation_alias="PORTRAIT_ENVIRONMENT")
+    log_level: str = Field(default="INFO", validation_alias="PORTRAIT_LOG_LEVEL")
 
-    max_upload_mb: int = Field(default=20, ge=1, le=100)
-    max_image_pixels: int = Field(default=40_000_000, ge=1_000_000, le=200_000_000)
+    max_upload_mb: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        validation_alias="PORTRAIT_MAX_UPLOAD_MB",
+    )
+    max_image_pixels: int = Field(
+        default=40_000_000,
+        ge=1_000_000,
+        le=200_000_000,
+        validation_alias="PORTRAIT_MAX_IMAGE_PIXELS",
+    )
 
-    comfyui_base_url: str = "http://127.0.0.1:8188"
-    comfyui_workflow_path: Path = Path("workflows/portrait_api.json")
-    comfyui_timeout_seconds: float = Field(default=15.0, ge=1.0, le=600.0)
+    comfyui_base_url: str = Field(
+        default="http://127.0.0.1:8188",
+        validation_alias="COMFYUI_BASE_URL",
+    )
+    comfyui_workflow_path: Path = Field(
+        default=Path("workflows/portrait_api.json"),
+        validation_alias="COMFYUI_WORKFLOW_PATH",
+    )
+    comfyui_timeout_seconds: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=600.0,
+        validation_alias="COMFYUI_TIMEOUT_SECONDS",
+    )
 
-    portrait_workflow_db: Path = Path("portrait_workflows.db")
-    portrait_feedback_db: Path = Path("portrait_feedback.db")
-    portrait_session_ttl_minutes: int = Field(default=60, ge=5, le=10_080)
-    portrait_likeness_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    portrait_workflow_db: Path = Field(
+        default=Path("portrait_workflows.db"),
+        validation_alias="PORTRAIT_WORKFLOW_DB",
+    )
+    portrait_feedback_db: Path = Field(
+        default=Path("portrait_feedback.db"),
+        validation_alias="PORTRAIT_FEEDBACK_DB",
+    )
+    portrait_session_ttl_minutes: int = Field(
+        default=60,
+        ge=5,
+        le=10_080,
+        validation_alias="PORTRAIT_SESSION_TTL_MINUTES",
+    )
+    portrait_likeness_threshold: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        validation_alias="PORTRAIT_LIKENESS_THRESHOLD",
+    )
 
     @field_validator("environment")
     @classmethod
