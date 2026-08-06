@@ -103,7 +103,7 @@ class Settings(BaseSettings):
         validation_alias="PORTRAIT_RATE_LIMIT_WINDOW_SECONDS",
     )
     enable_background_worker: bool = Field(
-        default=True,
+        default=False,
         validation_alias="PORTRAIT_ENABLE_BACKGROUND_WORKER",
     )
 
