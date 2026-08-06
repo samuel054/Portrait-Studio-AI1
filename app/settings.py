@@ -19,16 +19,11 @@ class Settings(BaseSettings):
     )
 
     app_name: str = Field(default="Portrait Studio AI", validation_alias="PORTRAIT_APP_NAME")
-    app_version: str = Field(default="0.19.0", validation_alias="PORTRAIT_APP_VERSION")
+    app_version: str = Field(default="0.21.0", validation_alias="PORTRAIT_APP_VERSION")
     environment: str = Field(default="development", validation_alias="PORTRAIT_ENVIRONMENT")
     log_level: str = Field(default="INFO", validation_alias="PORTRAIT_LOG_LEVEL")
 
-    max_upload_mb: int = Field(
-        default=20,
-        ge=1,
-        le=100,
-        validation_alias="PORTRAIT_MAX_UPLOAD_MB",
-    )
+    max_upload_mb: int = Field(default=20, ge=1, le=100, validation_alias="PORTRAIT_MAX_UPLOAD_MB")
     max_image_pixels: int = Field(
         default=40_000_000,
         ge=1_000_000,
@@ -50,10 +45,32 @@ class Settings(BaseSettings):
         le=600.0,
         validation_alias="COMFYUI_TIMEOUT_SECONDS",
     )
+    workflow_poll_interval_seconds: float = Field(
+        default=2.0,
+        ge=0.25,
+        le=60.0,
+        validation_alias="PORTRAIT_POLL_INTERVAL_SECONDS",
+    )
+    workflow_max_retries: int = Field(
+        default=3,
+        ge=0,
+        le=20,
+        validation_alias="PORTRAIT_WORKFLOW_MAX_RETRIES",
+    )
+    workflow_timeout_seconds: int = Field(
+        default=900,
+        ge=30,
+        le=86_400,
+        validation_alias="PORTRAIT_WORKFLOW_TIMEOUT_SECONDS",
+    )
 
     portrait_workflow_db: Path = Field(
         default=Path("portrait_workflows.db"),
         validation_alias="PORTRAIT_WORKFLOW_DB",
+    )
+    portrait_candidate_db: Path = Field(
+        default=Path("portrait_candidates.db"),
+        validation_alias="PORTRAIT_CANDIDATE_DB",
     )
     portrait_feedback_db: Path = Field(
         default=Path("portrait_feedback.db"),
@@ -70,6 +87,24 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
         validation_alias="PORTRAIT_LIKENESS_THRESHOLD",
+    )
+
+    api_key: str | None = Field(default=None, validation_alias="PORTRAIT_API_KEY")
+    rate_limit_requests: int = Field(
+        default=120,
+        ge=1,
+        le=100_000,
+        validation_alias="PORTRAIT_RATE_LIMIT_REQUESTS",
+    )
+    rate_limit_window_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        validation_alias="PORTRAIT_RATE_LIMIT_WINDOW_SECONDS",
+    )
+    enable_background_worker: bool = Field(
+        default=True,
+        validation_alias="PORTRAIT_ENABLE_BACKGROUND_WORKER",
     )
 
     @field_validator("environment")
