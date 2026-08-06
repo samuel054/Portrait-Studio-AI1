@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
@@ -14,8 +14,9 @@ from app.generators import GenerationRequest, list_generators, run_generation
 from app.identity import analyze_identity
 from app.planner import build_portrait_plan
 from app.styles import get_style, list_styles
+from app.workflow_jobs import portrait_workflow_store
 
-app = FastAPI(title="Portrait Studio AI", version="0.14.0")
+app = FastAPI(title="Portrait Studio AI", version="0.18.0")
 app.include_router(candidate_router)
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -49,6 +50,18 @@ async def _read_upload(file: UploadFile) -> bytes:
     if len(data) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="The image exceeds the 20 MB limit.")
     return data
+
+
+def _find_prompt_id(payload: dict[str, Any]) -> str | None:
+    direct = payload.get("prompt_id")
+    if isinstance(direct, str) and direct:
+        return direct
+    request_payload = payload.get("request_payload")
+    if isinstance(request_payload, dict):
+        nested = request_payload.get("prompt_id")
+        if isinstance(nested, str) and nested:
+            return nested
+    return None
 
 
 @app.get("/health")
@@ -131,24 +144,87 @@ async def create_portrait_job(
                 candidate_count=candidate_count,
             ),
         )
+        generation_payload = generation.to_dict()
+        workflow = portrait_workflow_store.create(
+            filename=file.filename,
+            style_id=style_id,
+            prompt_id=_find_prompt_id(generation_payload),
+            payload={
+                "analysis": image_report.to_dict(),
+                "identity": identity_report.to_dict(),
+                "enhancement_applied": enhancement_report is not None,
+                "enhancement": enhancement_report.to_dict() if enhancement_report else None,
+                "plan": plan.to_dict(),
+                "image_reference": upload.image_reference,
+                "generation": generation_payload,
+            },
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return {
-        "job": {
-            "filename": file.filename,
-            "analysis": image_report.to_dict(),
-            "identity": identity_report.to_dict(),
-            "enhancement_applied": enhancement_report is not None,
-            "enhancement": enhancement_report.to_dict() if enhancement_report else None,
-            "plan": plan.to_dict(),
-            "image_reference": upload.image_reference,
-            "generation": generation.to_dict(),
-        },
-        "next_step": "poll_generation",
+        "job": workflow.to_dict(),
+        "next_step": "poll_portrait_job",
     }
+
+
+@app.get("/v1/portrait-jobs/{job_id}")
+def portrait_job_status(job_id: str, refresh: bool = Query(default=True)) -> dict[str, object]:
+    try:
+        workflow = portrait_workflow_store.get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if refresh and workflow.prompt_id and workflow.status not in {"completed", "failed", "cancelled"}:
+        try:
+            generation = ComfyUIGenerator().get_job(workflow.prompt_id, include_images=False)
+            generation_payload = generation.to_dict()
+            if generation.status == "completed":
+                workflow = portrait_workflow_store.update(
+                    job_id,
+                    status="evaluating",
+                    stage="generation_completed",
+                    progress=70,
+                    payload_patch={"generation_status": generation_payload},
+                )
+            elif generation.status == "failed":
+                workflow = portrait_workflow_store.update(
+                    job_id,
+                    status="failed",
+                    stage="generation_failed",
+                    progress=100,
+                    error_code="GENERATION_FAILED",
+                    error_message="ComfyUI reported that portrait generation failed.",
+                    payload_patch={"generation_status": generation_payload},
+                )
+            else:
+                workflow = portrait_workflow_store.update(
+                    job_id,
+                    status="generating",
+                    stage=generation.status,
+                    progress=max(workflow.progress, 50),
+                    payload_patch={"generation_status": generation_payload},
+                )
+        except RuntimeError as exc:
+            workflow = portrait_workflow_store.update(
+                job_id,
+                stage="generation_status_unavailable",
+                payload_patch={"last_poll_error": str(exc)},
+            )
+
+    next_step = "poll_portrait_job"
+    if workflow.status == "evaluating":
+        next_step = "create_candidate_session"
+    elif workflow.status == "awaiting_selection":
+        next_step = "select_candidate"
+    elif workflow.status == "completed":
+        next_step = "download"
+    elif workflow.status == "failed":
+        next_step = "retry_generation"
+
+    return {"job": workflow.to_dict(), "next_step": next_step}
 
 
 @app.post("/v1/comfyui/images")
