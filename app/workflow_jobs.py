@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -77,11 +77,7 @@ class PortraitWorkflowJob:
 
 
 class PortraitWorkflowStore:
-    """Persistent workflow repository for the local MVP.
-
-    SQLite is hidden behind this class so storage can later move to PostgreSQL
-    without changing API routes or workflow orchestration code.
-    """
+    """Persistent workflow repository for the local MVP."""
 
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path else _default_database_path()
@@ -122,6 +118,10 @@ class PortraitWorkflowStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_workflow_status "
                 "ON portrait_workflow_jobs(status)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workflow_candidate_session "
+                "ON portrait_workflow_jobs(candidate_session_id)"
             )
 
     def create(
@@ -172,6 +172,14 @@ class PortraitWorkflowStore:
             raise KeyError(f"Portrait workflow job '{job_id}' was not found.")
         return self._from_row(row)
 
+    def find_by_candidate_session(self, session_id: str) -> PortraitWorkflowJob | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM portrait_workflow_jobs WHERE candidate_session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
     def list_active(self, limit: int = 100) -> list[PortraitWorkflowJob]:
         if not 1 <= limit <= 1000:
             raise ValueError("Active workflow limit must be between 1 and 1000.")
@@ -183,6 +191,13 @@ class PortraitWorkflowStore:
         with self._lock, self._connect() as connection:
             rows = connection.execute(query, (*sorted(TERMINAL_STATUSES), limit)).fetchall()
         return [self._from_row(row) for row in rows]
+
+    def counts_by_status(self) -> dict[str, int]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM portrait_workflow_jobs GROUP BY status"
+            ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
 
     def update(
         self,
@@ -230,6 +245,17 @@ class PortraitWorkflowStore:
                 ),
             )
         return self.get(job_id)
+
+    def delete_expired(self, ttl_minutes: int | None = None) -> int:
+        ttl = ttl_minutes or get_settings().portrait_session_ttl_minutes
+        cutoff = (datetime.now(UTC) - timedelta(minutes=ttl)).isoformat()
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM portrait_workflow_jobs "
+                "WHERE status IN ('completed', 'failed', 'cancelled') AND updated_at < ?",
+                (cutoff,),
+            )
+            return max(cursor.rowcount, 0)
 
     @staticmethod
     def _validate_status(status: str) -> None:
