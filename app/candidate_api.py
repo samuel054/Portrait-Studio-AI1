@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 from typing import Annotated
 
+import cv2
+import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
@@ -38,6 +40,16 @@ async def _read_original(file: UploadFile) -> bytes:
             status_code=413,
             detail=f"The source image exceeds the {settings.max_upload_mb} MB limit.",
         )
+
+    image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise HTTPException(status_code=400, detail="The source image is corrupt or unreadable.")
+    height, width = image.shape[:2]
+    if width * height > settings.max_image_pixels:
+        raise HTTPException(
+            status_code=413,
+            detail="The source image pixel dimensions exceed the safe limit.",
+        )
     return data
 
 
@@ -56,7 +68,9 @@ async def create_candidate_session(
                 "next_step": "poll_generation" if job.status != "failed" else "retry_generation",
             }
 
-        candidate_bytes = [base64.b64decode(image.image_base64) for image in job.images]
+        candidate_bytes = [
+            base64.b64decode(image.image_base64, validate=True) for image in job.images
+        ]
         ranking = rank_identity_first_candidates(
             original_bytes=original_bytes,
             candidate_bytes=candidate_bytes,
@@ -64,7 +78,7 @@ async def create_candidate_session(
             likeness_threshold=likeness_threshold,
         )
         session = candidate_session_store.create(job=job, ranking=ranking)
-    except ValueError as exc:
+    except (ValueError, base64.binascii.Error) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
