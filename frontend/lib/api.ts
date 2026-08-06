@@ -16,7 +16,29 @@ export type AnalysisResponse = {
   next_step: string;
 };
 
+export type PortraitStyle = {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  identity_priority: string;
+  pose_preservation: boolean;
+  clothing_preservation: boolean;
+  background_modes: string[];
+  output_types: string[];
+};
+
+type StylesResponse = {
+  count: number;
+  styles: PortraitStyle[];
+};
+
 const API_BASE = "/api/backend";
+
+async function readError(response: Response, fallback: string): Promise<Error> {
+  const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+  return new Error(payload?.detail ?? fallback);
+}
 
 export async function analyzePhoto(file: File): Promise<AnalysisResponse> {
   const body = new FormData();
@@ -28,9 +50,17 @@ export async function analyzePhoto(file: File): Promise<AnalysisResponse> {
   });
 
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(payload?.detail ?? "We could not analyze this photo.");
+    throw await readError(response, "We could not analyze this photo.");
   }
 
   return response.json() as Promise<AnalysisResponse>;
+}
+
+export async function getStyles(): Promise<PortraitStyle[]> {
+  const response = await fetch(`${API_BASE}/v1/styles`, { cache: "no-store" });
+  if (!response.ok) {
+    throw await readError(response, "We could not load portrait styles.");
+  }
+  const payload = (await response.json()) as StylesResponse;
+  return payload.styles;
 }
