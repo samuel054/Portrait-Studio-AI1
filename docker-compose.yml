@@ -1,0 +1,41 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://host.docker.internal:8188}
+      COMFYUI_TIMEOUT_SECONDS: ${COMFYUI_TIMEOUT_SECONDS:-120}
+      PORTRAIT_FEEDBACK_DB: /data/portrait_feedback.db
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./app:/workspace/app
+      - ./workflows:/workspace/workflows
+      - portrait-data:/data
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    environment:
+      BACKEND_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: /api/backend
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/workspace/frontend
+      - web-node-modules:/workspace/frontend/node_modules
+      - web-next-cache:/workspace/frontend/.next
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  portrait-data:
+  web-node-modules:
+  web-next-cache:
