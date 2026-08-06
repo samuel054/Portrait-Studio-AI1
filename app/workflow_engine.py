@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from app.candidate_sessions import CandidateSessionStore, candidate_session_store
 from app.comfyui import ComfyUIGenerator
 from app.identity_score import rank_identity_first_candidates
-from app.likeness import InsightFaceAdapter
+from app.likeness import FaceEmbeddingAdapter, InsightFaceAdapter
 from app.settings import Settings, get_settings
 from app.workflow_jobs import PortraitWorkflowJob, PortraitWorkflowStore, portrait_workflow_store
 
@@ -28,17 +28,25 @@ class WorkflowEngine:
         workflows: PortraitWorkflowStore | None = None,
         candidates: CandidateSessionStore | None = None,
         generator: ComfyUIGenerator | None = None,
+        likeness_adapter: FaceEmbeddingAdapter | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.workflows = workflows or portrait_workflow_store
         self.candidates = candidates or candidate_session_store
         self.generator = generator or ComfyUIGenerator()
+        self._likeness_adapter = likeness_adapter
         self.settings = settings or get_settings()
         self._stop_event = asyncio.Event()
 
+    @property
+    def likeness_adapter(self) -> FaceEmbeddingAdapter:
+        if self._likeness_adapter is None:
+            self._likeness_adapter = InsightFaceAdapter()
+        return self._likeness_adapter
+
     def advance(self, job_id: str) -> PortraitWorkflowJob:
         job = self.workflows.get(job_id)
-        if job.status in {"completed", "failed", "cancelled", "awaiting_selection"}:
+        if job.status in {"completed", "failed", "cancelled", "awaiting_selection", "rendering"}:
             return job
         if _age_seconds(job.created_at) > self.settings.workflow_timeout_seconds:
             return self.workflows.update(
@@ -117,11 +125,13 @@ class WorkflowEngine:
 
         try:
             original_bytes = base64.b64decode(source_base64, validate=True)
-            candidate_bytes = [base64.b64decode(image.image_base64, validate=True) for image in generation.images]
+            candidate_bytes = [
+                base64.b64decode(image.image_base64, validate=True) for image in generation.images
+            ]
             ranking = rank_identity_first_candidates(
                 original_bytes=original_bytes,
                 candidate_bytes=candidate_bytes,
-                adapter=InsightFaceAdapter(),
+                adapter=self.likeness_adapter,
                 likeness_threshold=self.settings.portrait_likeness_threshold,
             )
             session = self.candidates.create(generation, ranking)
@@ -156,9 +166,11 @@ class WorkflowEngine:
                 self.advance(job.id)
                 processed += 1
         self.candidates.delete_expired()
+        self.workflows.delete_expired()
         return processed
 
     async def run_forever(self) -> None:
+        self._stop_event = asyncio.Event()
         logger.info("portrait workflow worker started")
         while not self._stop_event.is_set():
             try:
