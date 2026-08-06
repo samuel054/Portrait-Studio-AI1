@@ -4,15 +4,33 @@ services:
       context: .
       dockerfile: docker/api.Dockerfile
     environment:
-      COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://host.docker.internal:8188}
-      COMFYUI_TIMEOUT_SECONDS: ${COMFYUI_TIMEOUT_SECONDS:-120}
+      PORTRAIT_APP_VERSION: ${PORTRAIT_APP_VERSION:-0.21.0}
+      PORTRAIT_ENVIRONMENT: ${PORTRAIT_ENVIRONMENT:-development}
+      PORTRAIT_LOG_LEVEL: ${PORTRAIT_LOG_LEVEL:-INFO}
+      PORTRAIT_ENABLE_BACKGROUND_WORKER: ${PORTRAIT_ENABLE_BACKGROUND_WORKER:-true}
+      PORTRAIT_POLL_INTERVAL_SECONDS: ${PORTRAIT_POLL_INTERVAL_SECONDS:-2}
+      PORTRAIT_WORKFLOW_MAX_RETRIES: ${PORTRAIT_WORKFLOW_MAX_RETRIES:-3}
+      PORTRAIT_WORKFLOW_TIMEOUT_SECONDS: ${PORTRAIT_WORKFLOW_TIMEOUT_SECONDS:-900}
+      PORTRAIT_WORKFLOW_DB: /data/portrait_workflows.db
+      PORTRAIT_CANDIDATE_DB: /data/portrait_candidates.db
       PORTRAIT_FEEDBACK_DB: /data/portrait_feedback.db
+      PORTRAIT_MAX_UPLOAD_MB: ${PORTRAIT_MAX_UPLOAD_MB:-20}
+      PORTRAIT_MAX_IMAGE_PIXELS: ${PORTRAIT_MAX_IMAGE_PIXELS:-40000000}
+      PORTRAIT_SESSION_TTL_MINUTES: ${PORTRAIT_SESSION_TTL_MINUTES:-60}
+      PORTRAIT_LIKENESS_THRESHOLD: ${PORTRAIT_LIKENESS_THRESHOLD:-0.35}
+      PORTRAIT_API_KEY: ${PORTRAIT_API_KEY:-}
+      PORTRAIT_RATE_LIMIT_REQUESTS: ${PORTRAIT_RATE_LIMIT_REQUESTS:-120}
+      PORTRAIT_RATE_LIMIT_WINDOW_SECONDS: ${PORTRAIT_RATE_LIMIT_WINDOW_SECONDS:-60}
+      COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://host.docker.internal:8188}
+      COMFYUI_WORKFLOW_PATH: ${COMFYUI_WORKFLOW_PATH:-workflows/portrait_api.json}
+      COMFYUI_TIMEOUT_SECONDS: ${COMFYUI_TIMEOUT_SECONDS:-120}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./app:/workspace/app
       - ./workflows:/workspace/workflows
       - portrait-data:/data
+      - insightface-models:/root/.insightface
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -37,5 +55,6 @@ services:
 
 volumes:
   portrait-data:
+  insightface-models:
   web-node-modules:
   web-next-cache:
