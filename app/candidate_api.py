@@ -13,11 +13,12 @@ from app.identity_score import rank_identity_first_candidates
 from app.likeness import InsightFaceAdapter
 from app.refinement_api import router as refinement_router
 from app.render_api import router as render_router
+from app.settings import get_settings
+from app.workflow_jobs import portrait_workflow_store
 
 router = APIRouter(prefix="/v1/candidate-sessions", tags=["candidate-selection"])
 
 _ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
-_MAX_FILE_SIZE = 20 * 1024 * 1024
 OriginalUpload = Annotated[UploadFile, File()]
 
 
@@ -26,13 +27,17 @@ class CandidateSelectionRequest(BaseModel):
 
 
 async def _read_original(file: UploadFile) -> bytes:
+    settings = get_settings()
     if file.content_type not in _ALLOWED_TYPES:
         raise HTTPException(status_code=415, detail="Upload a JPG, PNG, or WEBP source image.")
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="The source image is empty.")
-    if len(data) > _MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="The source image exceeds the 20 MB limit.")
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"The source image exceeds the {settings.max_upload_mb} MB limit.",
+        )
     return data
 
 
@@ -96,9 +101,17 @@ def select_candidate(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    selected = next(
-        item for item in session.candidates if item.id == session.selected_candidate_id
-    )
+    workflow = portrait_workflow_store.find_by_candidate_session(session_id)
+    if workflow is not None and workflow.status == "awaiting_selection":
+        portrait_workflow_store.update(
+            workflow.id,
+            status="rendering",
+            stage="candidate_selected",
+            progress=90,
+            payload_patch={"selected_candidate_id": session.selected_candidate_id},
+        )
+
+    selected = next(item for item in session.candidates if item.id == session.selected_candidate_id)
     return {
         "session": session.to_dict(include_images=False),
         "selected_candidate": selected.to_dict(include_image=True),
