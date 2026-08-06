@@ -30,7 +30,6 @@ packages = ["app"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-env = ["PORTRAIT_ENVIRONMENT=test", "PORTRAIT_ENABLE_BACKGROUND_WORKER=false"]
 
 [tool.ruff]
 line-length = 100
