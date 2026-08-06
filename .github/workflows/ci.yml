@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,8 +38,32 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Compile backend
+        run: python -m compileall -q app tests
+
       - name: Lint
         run: ruff check .
 
       - name: Run tests
+        env:
+          PORTRAIT_ENVIRONMENT: test
+          PORTRAIT_ENABLE_BACKGROUND_WORKER: "false"
+          PORTRAIT_WORKFLOW_DB: /tmp/portrait-ci-workflows.db
+          PORTRAIT_CANDIDATE_DB: /tmp/portrait-ci-candidates.db
+          PORTRAIT_FEEDBACK_DB: /tmp/portrait-ci-feedback.db
         run: pytest -q
+
+      - name: Validate OpenAPI generation
+        env:
+          PORTRAIT_ENVIRONMENT: test
+          PORTRAIT_ENABLE_BACKGROUND_WORKER: "false"
+        run: python -c "from app.main import app; schema=app.openapi(); assert '/v1/portrait-jobs' in schema['paths']"
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -f docker/api.Dockerfile -t portrait-studio-api:test .
