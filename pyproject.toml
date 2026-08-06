@@ -1,6 +1,6 @@
 [project]
 name = "portrait-studio-ai"
-version = "0.19.0"
+version = "0.20.0"
 description = "Identity-first portrait analysis and generation platform"
 requires-python = ">=3.11"
 dependencies = [
