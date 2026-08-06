@@ -1,7 +1,12 @@
 "use client";
 
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
-import { AnalysisResponse, analyzePhoto } from "@/lib/api";
+import {
+  AnalysisResponse,
+  PortraitStyle,
+  analyzePhoto,
+  getStyles,
+} from "@/lib/api";
 
 const ALLOWED = ["image/jpeg", "image/png", "image/webp"];
 const MAX_SIZE = 20 * 1024 * 1024;
@@ -12,6 +17,9 @@ export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [styles, setStyles] = useState<PortraitStyle[]>([]);
+  const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
+  const [stylesError, setStylesError] = useState("");
   const [status, setStatus] = useState<"idle" | "analyzing" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
@@ -21,8 +29,23 @@ export default function HomePage() {
     };
   }, [preview]);
 
+  useEffect(() => {
+    if (!analysis || analysis.next_step === "request_better_photo") return;
+    getStyles()
+      .then((items) => {
+        setStyles(items);
+        setSelectedStyle((current) => current ?? items[0]?.id ?? null);
+      })
+      .catch((error: unknown) => {
+        setStylesError(error instanceof Error ? error.message : "Style catalog unavailable.");
+      });
+  }, [analysis]);
+
   function chooseFile(next: File) {
     setAnalysis(null);
+    setStyles([]);
+    setSelectedStyle(null);
+    setStylesError("");
     setMessage("");
     setStatus("idle");
 
@@ -75,6 +98,8 @@ export default function HomePage() {
     }
   }
 
+  const canChooseStyle = analysis && analysis.next_step !== "request_better_photo";
+
   return (
     <main className="page">
       <div className="shell">
@@ -111,7 +136,6 @@ export default function HomePage() {
             >
               {preview ? (
                 <>
-                  {/* A user-selected object URL cannot be represented by next/image safely. */}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img className="preview" src={preview} alt="Selected portrait preview" />
                   <div className="overlay">
@@ -167,6 +191,54 @@ export default function HomePage() {
             )}
           </div>
         </section>
+
+        {canChooseStyle && (
+          <section className="styleSection" aria-labelledby="style-title">
+            <div className="sectionHeading">
+              <div>
+                <div className="eyebrow">Step 2</div>
+                <h2 id="style-title">Choose your portrait style</h2>
+              </div>
+              <p>Every option keeps identity preservation active.</p>
+            </div>
+
+            {stylesError ? (
+              <div className="status error">{stylesError}</div>
+            ) : styles.length === 0 ? (
+              <div className="status">Loading styles…</div>
+            ) : (
+              <div className="styleGrid">
+                {styles.map((style) => (
+                  <button
+                    key={style.id}
+                    type="button"
+                    className={`styleCard ${selectedStyle === style.id ? "selected" : ""}`}
+                    onClick={() => setSelectedStyle(style.id)}
+                    aria-pressed={selectedStyle === style.id}
+                  >
+                    <span className="styleCategory">{style.category}</span>
+                    <strong>{style.name}</strong>
+                    <span>{style.description}</span>
+                    <small>
+                      Identity {style.identity_priority.replace("_", " ")} · pose preserved · clothing preserved
+                    </small>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {selectedStyle && (
+              <div className="styleActions">
+                <span>
+                  Selected: <strong>{styles.find((style) => style.id === selectedStyle)?.name}</strong>
+                </span>
+                <button className="primary" type="button">
+                  Continue to generation
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         <section className="steps" aria-label="How it works">
           <article className="card step">
