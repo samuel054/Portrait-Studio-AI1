@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.candidate_sessions import candidate_session_store
 from app.final_render import render_selected_candidate
+from app.workflow_jobs import portrait_workflow_store
 
 router = APIRouter(tags=["final-render"])
 
@@ -29,9 +30,7 @@ def render_candidate(session_id: str, request: FinalRenderRequest) -> dict[str, 
             detail="Select a candidate before requesting the final render.",
         )
 
-    selected = next(
-        item for item in session.candidates if item.id == session.selected_candidate_id
-    )
+    selected = next(item for item in session.candidates if item.id == session.selected_candidate_id)
     try:
         result = render_selected_candidate(
             candidate_id=selected.id,
@@ -44,6 +43,24 @@ def render_candidate(session_id: str, request: FinalRenderRequest) -> dict[str, 
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    workflow = portrait_workflow_store.find_by_candidate_session(session_id)
+    if workflow is not None and workflow.status not in {"completed", "failed", "cancelled"}:
+        portrait_workflow_store.update(
+            workflow.id,
+            status="completed",
+            stage="render_completed",
+            progress=100,
+            payload_patch={
+                "render": {
+                    "filename": result.filename,
+                    "content_type": result.content_type,
+                    "width": result.width,
+                    "height": result.height,
+                },
+                "_source_image_base64": None,
+            },
+        )
 
     return {
         "render": result.to_dict(),
