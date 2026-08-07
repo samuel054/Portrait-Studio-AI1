@@ -82,6 +82,7 @@ class DryRunGenerator:
 
 
 def _build_registry() -> dict[str, PortraitGenerator]:
+    """Build providers lazily to avoid circular imports during module initialization."""
     from app.comfyui import ComfyUIGenerator
 
     generators: tuple[PortraitGenerator, ...] = (
@@ -91,15 +92,12 @@ def _build_registry() -> dict[str, PortraitGenerator]:
     return {generator.capabilities.id: generator for generator in generators}
 
 
-_GENERATORS = _build_registry()
-
-
 def list_generators() -> list[dict[str, object]]:
-    return [generator.capabilities.to_dict() for generator in _GENERATORS.values()]
+    return [generator.capabilities.to_dict() for generator in _build_registry().values()]
 
 
 def get_generator(generator_id: str) -> PortraitGenerator | None:
-    return _GENERATORS.get(generator_id.strip().lower())
+    return _build_registry().get(generator_id.strip().lower())
 
 
 def run_generation(generator_id: str, request: GenerationRequest) -> GenerationResult:
