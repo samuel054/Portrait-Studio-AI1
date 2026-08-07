@@ -7,13 +7,16 @@ from app.planner import build_portrait_plan
 client = TestClient(app)
 
 
-def test_generator_registry_exposes_dry_run() -> None:
+def test_generator_registry_exposes_supported_generators() -> None:
     items = list_generators()
+    by_id = {item["id"]: item for item in items}
 
-    assert len(items) == 1
-    assert items[0]["id"] == "dry_run"
-    assert items[0]["open_source"] is True
+    assert set(by_id) == {"dry_run", "comfyui"}
+    assert by_id["dry_run"]["open_source"] is True
+    assert by_id["comfyui"]["open_source"] is True
+    assert by_id["comfyui"]["local_execution"] is True
     assert get_generator("dry_run") is not None
+    assert get_generator("comfyui") is not None
 
 
 def test_dry_run_builds_model_payload() -> None:
@@ -52,7 +55,8 @@ def test_unknown_generator_is_rejected() -> None:
 def test_generator_endpoints() -> None:
     registry = client.get("/v1/generators")
     assert registry.status_code == 200
-    assert registry.json()["generators"][0]["id"] == "dry_run"
+    generators = {item["id"] for item in registry.json()["generators"]}
+    assert generators == {"dry_run", "comfyui"}
 
     response = client.post(
         "/v1/generate",
