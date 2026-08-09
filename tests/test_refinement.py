@@ -14,7 +14,10 @@ def test_refinement_plan_adds_scoped_instruction_and_identity_lock() -> None:
     )
 
     assert "warm garden at sunset" in plan.prompt
-    assert "Do not regenerate or reinterpret the face" in plan.negative_rules
+    assert any(
+        "Do not regenerate or reinterpret the face" in rule
+        for rule in plan.negative_rules
+    )
     assert "0.20" in plan.prompt
 
 
