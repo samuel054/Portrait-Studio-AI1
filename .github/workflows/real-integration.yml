@@ -1,0 +1,50 @@
+name: Real Backend Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: Backend base URL reachable from the self-hosted runner
+        required: true
+        default: http://127.0.0.1:8000
+      image_path:
+        description: Absolute path to a real portrait image on the self-hosted runner
+        required: true
+      style_id:
+        description: Portrait style ID
+        required: true
+        default: soft_lifestyle_illustration
+      validate_refinement:
+        description: Run a second real ComfyUI refinement generation
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  real-integration:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    env:
+      API_BASE_URL: ${{ inputs.api_base_url }}
+      IMAGE_PATH: ${{ inputs.image_path }}
+      STYLE_ID: ${{ inputs.style_id }}
+      VALIDATE_REFINEMENT: ${{ inputs.validate_refinement && '1' || '0' }}
+      PORTRAIT_API_KEY: ${{ secrets.PORTRAIT_API_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify integration prerequisites
+        shell: bash
+        run: |
+          command -v curl
+          command -v python
+          test -f "$IMAGE_PATH"
+          curl --fail --silent "$API_BASE_URL/health" >/dev/null
+
+      - name: Run real backend integration
+        shell: bash
+        run: bash scripts/validate_backend_real.sh
