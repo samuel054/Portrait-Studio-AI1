@@ -1,0 +1,72 @@
+name: Deployment CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker-compose.prod.yml"
+      - "docker/web.prod.Dockerfile"
+      - "docker/api.Dockerfile"
+      - "frontend/**"
+      - ".env.example"
+      - ".github/workflows/deployment-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docker-compose.prod.yml"
+      - "docker/web.prod.Dockerfile"
+      - "docker/api.Dockerfile"
+      - "frontend/**"
+      - ".env.example"
+      - ".github/workflows/deployment-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-production-stack:
+    runs-on: ubuntu-latest
+    env:
+      PORTRAIT_API_KEY: ci-deployment-key
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate production compose configuration
+        run: docker compose -f docker-compose.prod.yml config --quiet
+
+      - name: Build production frontend image
+        run: docker build -f docker/web.prod.Dockerfile -t portrait-studio-web:ci .
+
+      - name: Smoke-test production frontend image
+        run: |
+          docker run -d --name portrait-web \
+            -e BACKEND_URL=http://127.0.0.1:8000 \
+            -e PORTRAIT_API_KEY=ci-deployment-key \
+            -p 3000:3000 \
+            portrait-studio-web:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3000/ >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs portrait-web
+          exit 1
+
+      - name: Verify frontend healthcheck
+        run: |
+          for attempt in $(seq 1 20); do
+            status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' portrait-web)
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs portrait-web
+              exit 1
+            fi
+            sleep 2
+          done
+          docker inspect portrait-web
+          exit 1
