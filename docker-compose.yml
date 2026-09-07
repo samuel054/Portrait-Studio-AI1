@@ -40,8 +40,8 @@ services:
       context: .
       dockerfile: docker/web.Dockerfile
     environment:
-      BACKEND_BASE_URL: http://api:8000
-      NEXT_PUBLIC_API_BASE_URL: /api/backend
+      BACKEND_URL: http://api:8000
+      PORTRAIT_API_KEY: ${PORTRAIT_API_KEY:-}
       WATCHPACK_POLLING: "true"
     ports:
       - "${WEB_PORT:-3000}:3000"
