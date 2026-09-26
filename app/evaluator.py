@@ -65,8 +65,16 @@ def rank_candidates(original_bytes: bytes, candidate_bytes: list[bytes]) -> Cand
     original_ratio = max(original_identity.largest_face_ratio, 0.0001)
 
     for index, image_bytes in enumerate(candidate_bytes):
-        identity = analyze_identity(image_bytes)
-        quality = _quality_score(image_bytes)
+        try:
+            identity = analyze_identity(image_bytes)
+            quality = _quality_score(image_bytes)
+        except ValueError:
+            preliminary.append({
+                "index": index, "score": 0.0, "status": "reject", "face_count_preserved": False,
+                "face_scale_similarity": 0.0, "quality_score": 0.0, "identity_readiness": "not_ready",
+                "reasons": ("Generated image is corrupt or unreadable.",),
+            })
+            continue
         face_count_preserved = identity.face_count == original_identity.face_count
         ratio_delta = abs(identity.largest_face_ratio - original_ratio) / original_ratio
         face_scale_similarity = round(max(0.0, 100.0 - min(100.0, ratio_delta * 100.0)), 2)

@@ -4,8 +4,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 WORKDIR /workspace/frontend
 
-COPY frontend/package.json ./package.json
-RUN npm install
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
 COPY frontend .
 

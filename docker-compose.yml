@@ -21,16 +21,19 @@ services:
       PORTRAIT_API_KEY: ${PORTRAIT_API_KEY:-}
       PORTRAIT_RATE_LIMIT_REQUESTS: ${PORTRAIT_RATE_LIMIT_REQUESTS:-120}
       PORTRAIT_RATE_LIMIT_WINDOW_SECONDS: ${PORTRAIT_RATE_LIMIT_WINDOW_SECONDS:-60}
-      COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://host.docker.internal:8188}
+      COMFYUI_BASE_URL: ${COMFYUI_DOCKER_BASE_URL:-http://host.docker.internal:8188}
+      COMFYUI_CHECKPOINT: ${COMFYUI_CHECKPOINT:-sd_xl_base_1.0.safetensors}
+      PORTRAIT_IDENTITY_MODEL_DIR: /models/identity
+      U2NET_HOME: /models/background
       COMFYUI_WORKFLOW_PATH: ${COMFYUI_WORKFLOW_PATH:-workflows/portrait_api.json}
       COMFYUI_TIMEOUT_SECONDS: ${COMFYUI_TIMEOUT_SECONDS:-120}
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - ./app:/workspace/app
       - ./workflows:/workspace/workflows
       - portrait-data:/data
-      - insightface-models:/root/.insightface
+      - ./models:/models:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -44,7 +47,7 @@ services:
       PORTRAIT_API_KEY: ${PORTRAIT_API_KEY:-}
       WATCHPACK_POLLING: "true"
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
     volumes:
       - ./frontend:/workspace/frontend
       - web-node-modules:/workspace/frontend/node_modules
@@ -55,6 +58,5 @@ services:
 
 volumes:
   portrait-data:
-  insightface-models:
   web-node-modules:
   web-next-cache:

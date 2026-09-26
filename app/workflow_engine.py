@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import threading
 from datetime import UTC, datetime
+from dataclasses import replace
 
 from app.candidate_sessions import CandidateSessionStore, candidate_session_store
 from app.comfyui import ComfyUIGenerator
 from app.identity_score import rank_identity_first_candidates
-from app.likeness import FaceEmbeddingAdapter, InsightFaceAdapter
+from app.likeness import FaceEmbeddingAdapter, create_likeness_adapter
 from app.settings import Settings, get_settings
 from app.workflow_jobs import PortraitWorkflowJob, PortraitWorkflowStore, portrait_workflow_store
+from app.composition import finish_background
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +40,20 @@ class WorkflowEngine:
         self._likeness_adapter = likeness_adapter
         self.settings = settings or get_settings()
         self._stop_event = asyncio.Event()
+        # The local MVP has one API worker; serialize browser and background-worker advances.
+        self._advance_lock = threading.RLock()
 
     @property
     def likeness_adapter(self) -> FaceEmbeddingAdapter:
         if self._likeness_adapter is None:
-            self._likeness_adapter = InsightFaceAdapter()
+            self._likeness_adapter = create_likeness_adapter()
         return self._likeness_adapter
 
     def advance(self, job_id: str) -> PortraitWorkflowJob:
+        with self._advance_lock:
+            return self._advance(job_id)
+
+    def _advance(self, job_id: str) -> PortraitWorkflowJob:
         job = self.workflows.get(job_id)
         if job.status in {"completed", "failed", "cancelled", "awaiting_selection", "rendering"}:
             return job
@@ -124,17 +133,26 @@ class WorkflowEngine:
             )
 
         try:
+            self.workflows.update(job_id, status="evaluating", stage="checking_likeness")
             original_bytes = base64.b64decode(source_base64, validate=True)
             candidate_bytes = [
                 base64.b64decode(image.image_base64, validate=True) for image in generation.images
             ]
+            background = job.payload.get("plan", {}).get("background", "keep")
+            if background in {"transparent", "blur"}:
+                candidate_bytes = [finish_background(data, background) for data in candidate_bytes]
+                generation = replace(generation, images=tuple(
+                    replace(image, content_type="image/png", filename=f"candidate-{index}.png",
+                            image_base64=base64.b64encode(data).decode("ascii"))
+                    for index, (image, data) in enumerate(zip(generation.images, candidate_bytes, strict=True))
+                ))
             ranking = rank_identity_first_candidates(
                 original_bytes=original_bytes,
                 candidate_bytes=candidate_bytes,
                 adapter=self.likeness_adapter,
                 likeness_threshold=self.settings.portrait_likeness_threshold,
             )
-            session = self.candidates.create(generation, ranking)
+            session = self.candidates.create(generation, ranking, source_image_bytes=original_bytes)
         except (ValueError, RuntimeError) as exc:
             return self.workflows.update(
                 job_id,
@@ -152,7 +170,7 @@ class WorkflowEngine:
             progress=85,
             candidate_session_id=session.id,
             payload_patch={
-                "generation_status": generation.to_dict(),
+                "generation_status": {"status": "completed", "prompt_id": generation.prompt_id},
                 "ranking": ranking.to_dict(),
                 "_source_image_base64": None,
                 "_poll_retry_count": 0,
@@ -160,6 +178,8 @@ class WorkflowEngine:
         )
 
     def run_once(self, limit: int = 50) -> int:
+        self.candidates.delete_expired()
+        self.workflows.delete_expired()
         processed = 0
         for job in self.workflows.list_active(limit=limit):
             if job.status in {"generating", "evaluating", "queued"}:

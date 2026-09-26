@@ -17,3 +17,8 @@ htmlcov
 .env
 .env.*
 !.env.example
+
+models
+artifacts
+frontend/test-results
+frontend/playwright-report

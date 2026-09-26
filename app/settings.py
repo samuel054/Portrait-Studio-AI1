@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,6 +39,24 @@ class Settings(BaseSettings):
     comfyui_workflow_path: Path = Field(
         default=Path("workflows/portrait_api.json"),
         validation_alias="COMFYUI_WORKFLOW_PATH",
+    )
+    comfyui_checkpoint: str = Field(
+        default="sd_xl_base_1.0.safetensors", validation_alias="COMFYUI_CHECKPOINT"
+    )
+    insightface_model_name: str = Field(
+        default="buffalo_l", validation_alias="PORTRAIT_IDENTITY_MODEL"
+    )
+    insightface_root: Path = Field(
+        default=Path.home() / ".insightface", validation_alias="PORTRAIT_IDENTITY_ROOT"
+    )
+    identity_adapter: Literal["opencv_sface", "insightface"] = Field(
+        default="opencv_sface", validation_alias="PORTRAIT_IDENTITY_ADAPTER"
+    )
+    identity_model_dir: Path = Field(
+        default=Path("models/identity"), validation_alias="PORTRAIT_IDENTITY_MODEL_DIR"
+    )
+    background_model_dir: Path = Field(
+        default=Path("models/background"), validation_alias="U2NET_HOME"
     )
     comfyui_timeout_seconds: float = Field(
         default=15.0,

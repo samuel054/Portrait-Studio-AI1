@@ -8,10 +8,9 @@ import urllib.request
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-import cv2
-import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.analyzer import analyze_image
 from app.candidate_api import router as candidate_router
@@ -25,6 +24,9 @@ from app.settings import get_settings
 from app.styles import get_style, list_styles
 from app.workflow_engine import workflow_engine
 from app.workflow_jobs import portrait_workflow_store
+from app.uploads import read_upload
+from app.runtime import runtime_status, require_identity_runtime
+from app.composition import prepare_crop, background_session
 
 settings = get_settings()
 logging.basicConfig(
@@ -77,23 +79,7 @@ class GenerationApiRequest(PortraitPlanRequest):
 
 
 async def _read_upload(file: UploadFile) -> bytes:
-    if file.content_type not in ALLOWED_TYPES:
-        raise HTTPException(status_code=415, detail="Upload a JPG, PNG, or WEBP image.")
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
-    if len(data) > settings.max_upload_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"The image exceeds the {settings.max_upload_mb} MB limit.",
-        )
-    image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-    if image is None:
-        raise HTTPException(status_code=400, detail="The uploaded image is corrupt or unreadable.")
-    height, width = image.shape[:2]
-    if width * height > settings.max_image_pixels:
-        raise HTTPException(status_code=413, detail="The image pixel dimensions exceed the safe limit.")
-    return data
+    return await read_upload(file)
 
 
 def _find_prompt_id(payload: dict[str, Any]) -> str | None:
@@ -147,6 +133,11 @@ def styles(category: str | None = Query(default=None)) -> dict[str, object]:
     return {"count": len(items), "styles": items}
 
 
+@app.get("/v1/runtime")
+def generation_runtime() -> dict[str, object]:
+    return runtime_status()
+
+
 @app.get("/v1/styles/{style_id}")
 def style_detail(style_id: str) -> dict[str, object]:
     style = get_style(style_id)
@@ -175,15 +166,18 @@ async def create_portrait_job(
 ) -> dict[str, object]:
     data = await _read_upload(file)
     try:
-        image_report = analyze_image(data)
-        identity_report = analyze_identity(data)
+        data = await run_in_threadpool(prepare_crop, data, crop)
+        image_report = await run_in_threadpool(analyze_image, data)
+        identity_report = await run_in_threadpool(analyze_identity, data)
         if identity_report.identity_readiness in {"not_ready", "needs_better_photo"}:
             raise ValueError("Upload a better photo with a clearly visible face before generation.")
 
         working_bytes = data
         enhancement_report = None
         if image_report.needs_enhancement:
-            working_bytes, enhancement_report = enhance_image(data)
+            working_bytes, enhancement_report = await run_in_threadpool(enhance_image, data)
+            if not enhancement_report.face_count_preserved:
+                raise ValueError("Enhancement changed face detection. Please use a clearer original photo.")
             if enhancement_report.identity_after.identity_readiness in {
                 "not_ready",
                 "needs_better_photo",
@@ -198,15 +192,18 @@ async def create_portrait_job(
             preserve_pose=preserve_pose,
             preserve_clothing=preserve_clothing,
         )
+        await run_in_threadpool(require_identity_runtime)
+        if background in {"transparent", "blur"}:
+            await run_in_threadpool(background_session)
         comfyui = ComfyUIGenerator()
-        upload = comfyui.upload_image(
+        upload = await run_in_threadpool(comfyui.upload_image,
             image_bytes=working_bytes,
-            filename=file.filename or "portrait.png",
-            content_type="image/png" if enhancement_report else (file.content_type or "image/png"),
+            filename="portrait.png",
+            content_type="image/png",
             subfolder="portrait-studio-ai",
             overwrite=False,
         )
-        generation = run_generation(
+        generation = await run_in_threadpool(run_generation,
             "comfyui",
             GenerationRequest(
                 plan=plan,
@@ -271,10 +268,10 @@ async def upload_comfyui_image(
 ) -> dict[str, object]:
     data = await _read_upload(file)
     try:
-        result = ComfyUIGenerator().upload_image(
+        result = await run_in_threadpool(ComfyUIGenerator().upload_image,
             image_bytes=data,
-            filename=file.filename or "portrait.png",
-            content_type=file.content_type or "application/octet-stream",
+            filename="portrait.png",
+            content_type="image/png",
             subfolder=subfolder.strip().strip("/"),
             overwrite=overwrite,
         )
@@ -291,7 +288,8 @@ def generation_status(
     include_images: bool = Query(default=True),
 ) -> dict[str, object]:
     try:
-        result = ComfyUIGenerator().get_job(prompt_id, include_images=include_images)
+        # Images are exposed exclusively through evaluated candidate sessions.
+        result = ComfyUIGenerator().get_job(prompt_id, include_images=False)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -342,8 +340,8 @@ def generate(request: GenerationApiRequest) -> dict[str, object]:
 async def analyze(file: ImageUpload) -> dict[str, object]:
     data = await _read_upload(file)
     try:
-        image_report = analyze_image(data)
-        identity_report = analyze_identity(data)
+        image_report = await run_in_threadpool(analyze_image, data)
+        identity_report = await run_in_threadpool(analyze_identity, data)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if identity_report.identity_readiness in {"not_ready", "needs_better_photo"}:
@@ -365,7 +363,7 @@ async def analyze(file: ImageUpload) -> dict[str, object]:
 async def enhance(file: ImageUpload) -> dict[str, object]:
     data = await _read_upload(file)
     try:
-        enhanced_bytes, report = enhance_image(data)
+        enhanced_bytes, report = await run_in_threadpool(enhance_image, data)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {

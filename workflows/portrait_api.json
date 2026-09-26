@@ -27,11 +27,11 @@
       "cfg": 6.5,
       "sampler_name": "dpmpp_2m",
       "scheduler": "karras",
-      "denoise": 0.55,
+      "denoise": "{{DENOISE}}",
       "model": ["10", 0],
       "positive": ["2", 0],
       "negative": ["3", 0],
-      "latent_image": ["11", 0]
+      "latent_image": ["12", 0]
     }
   },
   "5": {
@@ -51,14 +51,22 @@
   "10": {
     "class_type": "CheckpointLoaderSimple",
     "inputs": {
-      "ckpt_name": "REPLACE_WITH_LOCAL_MODEL.safetensors"
+      "ckpt_name": "{{CHECKPOINT}}"
     }
   },
   "11": {
     "class_type": "VAEEncode",
     "inputs": {
-      "pixels": ["1", 0],
+      "pixels": ["13", 0],
       "vae": ["10", 2]
     }
+  },
+  "12": {
+    "class_type": "RepeatLatentBatch",
+    "inputs": {"samples": ["11", 0], "amount": "{{CANDIDATE_COUNT}}"}
+  },
+  "13": {
+    "class_type": "ImageScaleToTotalPixels",
+    "inputs": {"image": ["1", 0], "upscale_method": "lanczos", "megapixels": 1.0}
   }
 }

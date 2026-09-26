@@ -23,6 +23,7 @@ class PortraitPlan:
     style_rules: tuple[str, ...]
     negative_rules: tuple[str, ...]
     prompt: str
+    denoise: float = 0.35
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)

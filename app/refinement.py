@@ -86,4 +86,5 @@ def build_refinement_plan(
         style_rules=base.style_rules + refinement_rules,
         negative_rules=negative_rules,
         prompt=prompt,
+        denoise=strength,
     )
