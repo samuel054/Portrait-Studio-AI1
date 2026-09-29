@@ -2,6 +2,8 @@
 
 This app has three parts: the website, the API, and ComfyUI. The face checker runs on a CPU; portrait generation is practical on a computer that can run SDXL. All image processing stays on the computer or the private GPU host you configure.
 
+For Windows 11 with an NVIDIA RTX card and 8 GB of dedicated graphics memory, follow the [Windows setup walkthrough](WINDOWS_NVIDIA_SETUP.md). The website starts with two candidates to reduce the initial memory demand; three and four remain available.
+
 ## 1. Install the app
 
 Install Python 3.12, Node.js 22, and Git. Open a terminal in the project directory.

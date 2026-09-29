@@ -10,7 +10,7 @@ import {
 
 const STORAGE_KEY = "portrait-studio-workflow-v1";
 const TERMINAL = new Set(["failed", "cancelled", "completed", "awaiting_selection", "rendering"]);
-const DEFAULT_OPTIONS: PortraitOptions = { crop: "original", background: "keep", output_type: "social", candidate_count: 4 };
+const DEFAULT_OPTIONS: PortraitOptions = { crop: "original", background: "keep", output_type: "social", candidate_count: 2 };
 const LABELS: Record<string, string> = {
   original: "Keep photo framing", face: "Face portrait", half_body: "Upper body", full_body: "Full photo",
   keep: "Keep background", blur: "Soft blur", replace: "New studio setting", transparent: "Transparent", surprise: "Let the style decide",
