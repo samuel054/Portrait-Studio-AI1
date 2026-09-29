@@ -56,6 +56,11 @@ class PortraitWorkflowJob:
         payload = dict(self.payload)
         if not include_private:
             payload = {key: value for key, value in payload.items() if not key.startswith("_")}
+            # Rejected/raw outputs must never bypass the candidate evaluator through job polling.
+            for field in ("generation_status", "generation"):
+                if isinstance(payload.get(field), dict):
+                    payload[field] = {key: value for key, value in payload[field].items()
+                                      if key != "images"}
         return {
             "id": self.id,
             "status": self.status,
@@ -88,6 +93,7 @@ class PortraitWorkflowStore:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA secure_delete = ON")
         return connection
 
     def _initialize(self) -> None:
@@ -170,7 +176,15 @@ class PortraitWorkflowStore:
             ).fetchone()
         if row is None:
             raise KeyError(f"Portrait workflow job '{job_id}' was not found.")
+        cutoff = datetime.now(UTC) - timedelta(minutes=get_settings().portrait_session_ttl_minutes)
+        if datetime.fromisoformat(row["created_at"]) < cutoff:
+            self.delete(job_id)
+            raise KeyError("This portrait job has expired. Please upload the photo again.")
         return self._from_row(row)
+
+    def delete(self, job_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM portrait_workflow_jobs WHERE id = ?", (job_id,))
 
     def find_by_candidate_session(self, session_id: str) -> PortraitWorkflowJob | None:
         with self._lock, self._connect() as connection:
@@ -223,6 +237,8 @@ class PortraitWorkflowStore:
         payload = dict(current.payload)
         if payload_patch:
             payload.update(payload_patch)
+        if next_status in TERMINAL_STATUSES:
+            payload.pop("_source_image_base64", None)
 
         with self._lock, self._connect() as connection:
             connection.execute(
@@ -252,7 +268,7 @@ class PortraitWorkflowStore:
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM portrait_workflow_jobs "
-                "WHERE status IN ('completed', 'failed', 'cancelled') AND updated_at < ?",
+                "WHERE created_at < ?",
                 (cutoff,),
             )
             return max(cursor.rowcount, 0)

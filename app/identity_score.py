@@ -81,12 +81,14 @@ def rank_identity_first_candidates(
         candidate_bytes,
         strict=True,
     ):
-        likeness = compare_likeness(
-            original_bytes,
-            image_bytes,
-            adapter=adapter,
-            threshold=likeness_threshold,
-        )
+        try:
+            if structural.status == "reject":
+                raise ValueError("Candidate failed structural checks.")
+            likeness = compare_likeness(
+                original_bytes, image_bytes, adapter=adapter, threshold=likeness_threshold,
+            )
+        except ValueError:
+            likeness = LikenessResult(adapter.id, -1.0, 0.0, "reject", likeness_threshold)
         final_score, status, reasons = _combine(structural, likeness)
         combined.append(
             {
@@ -109,7 +111,7 @@ def rank_identity_first_candidates(
         IdentityFirstEvaluation(rank=ranks[int(item["index"])], **item)
         for item in combined
     )
-    eligible = [item for item in ordered if item["status"] != "reject"]
+    eligible = [item for item in ordered if item["status"] == "pass"]
     recommended_index = int(eligible[0]["index"]) if eligible else None
 
     return IdentityFirstRanking(

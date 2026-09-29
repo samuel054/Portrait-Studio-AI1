@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +16,7 @@ from app.generators import (
     GenerationResult,
     GeneratorCapabilities,
 )
+from app.settings import get_settings
 
 
 @dataclass(frozen=True)
@@ -22,13 +24,16 @@ class ComfyUIConfig:
     base_url: str = "http://127.0.0.1:8188"
     workflow_path: str = "workflows/portrait_api.json"
     timeout_seconds: float = 15.0
+    checkpoint: str = "sd_xl_base_1.0.safetensors"
 
     @classmethod
     def from_environment(cls) -> "ComfyUIConfig":
+        settings = get_settings()
         return cls(
-            base_url=os.getenv("COMFYUI_BASE_URL", cls.base_url).rstrip("/"),
-            workflow_path=os.getenv("COMFYUI_WORKFLOW_PATH", cls.workflow_path),
-            timeout_seconds=float(os.getenv("COMFYUI_TIMEOUT_SECONDS", cls.timeout_seconds)),
+            base_url=settings.comfyui_base_url,
+            workflow_path=str(settings.comfyui_workflow_path),
+            timeout_seconds=settings.comfyui_timeout_seconds,
+            checkpoint=settings.comfyui_checkpoint,
         )
 
 
@@ -127,7 +132,7 @@ class ComfyUIGenerator:
                 timeout=self.config.timeout_seconds,
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(
                 f"ComfyUI is unavailable at '{self.config.base_url}'."
             ) from exc
@@ -150,6 +155,10 @@ class ComfyUIGenerator:
         safe_name = os.path.basename(filename.strip())
         if not safe_name:
             raise ValueError("A valid filename is required.")
+        if any(char in safe_name + subfolder + content_type for char in '\r\n"'):
+            raise ValueError("Invalid upload filename or metadata.")
+        if ".." in subfolder.split("/") or subfolder.startswith("/"):
+            raise ValueError("Invalid upload subfolder.")
 
         boundary = f"portrait-{uuid.uuid4().hex}"
         parts = [
@@ -168,7 +177,7 @@ class ComfyUIGenerator:
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(
                 f"ComfyUI is unavailable at '{self.config.base_url}'."
             ) from exc
@@ -189,8 +198,10 @@ class ComfyUIGenerator:
             "{{PROMPT}}": request.plan.prompt,
             "{{NEGATIVE_PROMPT}}": " ".join(request.plan.negative_rules),
             "{{IMAGE_REFERENCE}}": request.image_reference,
-            "{{SEED}}": request.seed if request.seed is not None else 0,
+            "{{SEED}}": request.seed if request.seed is not None else secrets.randbits(63),
             "{{CANDIDATE_COUNT}}": request.candidate_count,
+            "{{CHECKPOINT}}": self.config.checkpoint,
+            "{{DENOISE}}": request.plan.denoise,
         }
         return {
             "prompt": self._replace_tokens(workflow, tokens),
@@ -213,13 +224,15 @@ class ComfyUIGenerator:
                 timeout=self.config.timeout_seconds,
             ) as response:
                 response_payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(
                 f"ComfyUI is unavailable at '{self.config.base_url}'."
             ) from exc
         except json.JSONDecodeError as exc:
             raise RuntimeError("ComfyUI returned an invalid JSON response.") from exc
 
+        if not isinstance(response_payload, dict):
+            raise RuntimeError("ComfyUI returned an unexpected generation response.")
         prompt_id = response_payload.get("prompt_id")
         if not prompt_id:
             raise RuntimeError("ComfyUI did not return a prompt_id.")
@@ -253,7 +266,7 @@ class ComfyUIGenerator:
             ) as response:
                 image_bytes = response.read()
                 content_type = response.headers.get_content_type()
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError("ComfyUI generated an image but it could not be downloaded.") from exc
 
         return ComfyUIImage(
@@ -269,9 +282,16 @@ class ComfyUIGenerator:
         if not normalized:
             raise ValueError("prompt_id is required.")
 
-        history = self._request_json(f"/history/{urllib.parse.quote(normalized)}")
+        history = self._request_json(f"/history/{urllib.parse.quote(normalized, safe='')}")
         job = history.get(normalized)
         if job is None:
+            queue = self._request_json("/queue")
+            running = any(
+                isinstance(item, list) and len(item) > 1 and item[1] == normalized
+                for item in queue.get("queue_running", [])
+            )
+            if running:
+                return ComfyUIJobResult(prompt_id=normalized, status="running", images=())
             return ComfyUIJobResult(prompt_id=normalized, status="queued", images=())
         if not isinstance(job, dict):
             raise RuntimeError("ComfyUI returned malformed job history.")
@@ -280,25 +300,30 @@ class ComfyUIGenerator:
         status_text = "completed"
         error: str | None = None
         if isinstance(status_payload, dict):
-            completed = status_payload.get("completed")
             status_text = str(status_payload.get("status_str", "completed"))
-            if completed is False and status_text == "error":
+            if status_text == "error":
                 error = "ComfyUI reported a generation error."
 
         images: list[ComfyUIImage] = []
         outputs = job.get("outputs", {})
-        if include_images and isinstance(outputs, dict):
+        output_count = 0
+        if not error and isinstance(outputs, dict):
             for node_output in outputs.values():
                 if not isinstance(node_output, dict):
                     continue
                 for metadata in node_output.get("images", []):
                     if isinstance(metadata, dict):
-                        images.append(self._download_image(metadata))
+                        output_count += 1
+                        if include_images:
+                            images.append(self._download_image(metadata))
 
         if error:
             final_status = "failed"
-        elif images:
+        elif output_count:
             final_status = "completed"
+        elif isinstance(status_payload, dict) and status_payload.get("completed") is True:
+            final_status = "failed"
+            error = "The workflow completed without any saved portrait images."
         elif status_text in {"running", "executing"}:
             final_status = "running"
         else:

@@ -95,6 +95,7 @@ class CandidateSessionStore:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA secure_delete = ON")
         return connection
 
     def _initialize(self) -> None:
@@ -112,6 +113,9 @@ class CandidateSessionStore:
                 )
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(candidate_sessions)")}
+            if "source_image_base64" not in columns:
+                connection.execute("ALTER TABLE candidate_sessions ADD COLUMN source_image_base64 TEXT")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_candidate_sessions_prompt_id "
                 "ON candidate_sessions(prompt_id)"
@@ -121,7 +125,10 @@ class CandidateSessionStore:
                 "ON candidate_sessions(status)"
             )
 
-    def create(self, job: ComfyUIJobResult, ranking: IdentityFirstRanking) -> CandidateSession:
+    def create(
+        self, job: ComfyUIJobResult, ranking: IdentityFirstRanking,
+        source_image_bytes: bytes | None = None,
+    ) -> CandidateSession:
         if job.status != "completed":
             raise ValueError("Candidate sessions can only be created from completed generations.")
         if not job.images:
@@ -131,7 +138,7 @@ class CandidateSessionStore:
         eligible = [
             (index, image, evaluations.get(index))
             for index, image in enumerate(job.images)
-            if evaluations.get(index) is not None and evaluations[index].status != "reject"
+            if evaluations.get(index) is not None and evaluations[index].status == "pass"
         ]
         eligible.sort(key=lambda item: (item[2].rank, item[0]))
         eligible = eligible[:4]
@@ -178,10 +185,11 @@ class CandidateSessionStore:
                 """
                 INSERT INTO candidate_sessions (
                     id, prompt_id, status, selected_candidate_id, candidates_json,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?)
+                    created_at, updated_at, source_image_base64
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
                 """,
-                (session.id, session.prompt_id, session.status, serialized, timestamp, timestamp),
+                (session.id, session.prompt_id, session.status, serialized, timestamp, timestamp,
+                 base64.b64encode(source_image_bytes).decode("ascii") if source_image_bytes else None),
             )
         return self.get(session.id)
 
@@ -192,7 +200,25 @@ class CandidateSessionStore:
             ).fetchone()
         if row is None:
             raise KeyError("Candidate session not found.")
+        cutoff = datetime.now(UTC) - timedelta(minutes=get_settings().portrait_session_ttl_minutes)
+        if datetime.fromisoformat(row["created_at"]) < cutoff:
+            self.delete(session_id)
+            raise KeyError("This portrait session has expired. Please upload the photo again.")
         return self._from_row(row)
+
+    def source_bytes(self, session_id: str) -> bytes:
+        self.get(session_id)  # Enforce expiry before accessing the private source.
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT source_image_base64 FROM candidate_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        if row is None or not row[0]:
+            raise ValueError("The original photo has expired. Upload it again to refine safely.")
+        return base64.b64decode(row[0], validate=True)
+
+    def delete(self, session_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM candidate_sessions WHERE id = ?", (session_id,))
 
     def select(self, session_id: str, candidate_id: str) -> CandidateSession:
         normalized = candidate_id.strip().upper()
@@ -216,7 +242,7 @@ class CandidateSessionStore:
         cutoff = (datetime.now(UTC) - timedelta(minutes=ttl)).isoformat()
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                "DELETE FROM candidate_sessions WHERE updated_at < ?",
+                "DELETE FROM candidate_sessions WHERE created_at < ?",
                 (cutoff,),
             )
             return max(cursor.rowcount, 0)

@@ -1,7 +1,7 @@
 FROM node:22-alpine AS dependencies
 WORKDIR /workspace/frontend
-COPY frontend/package.json ./package.json
-RUN npm install
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
 FROM node:22-alpine AS builder
 ENV NEXT_TELEMETRY_DISABLED=1

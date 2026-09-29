@@ -74,10 +74,10 @@ def _classify_readiness(face_count: int, largest_face_ratio: float) -> tuple[str
         guidance.append("Upload a closer crop or a higher-resolution photo.")
         return "needs_better_photo", "high", tuple(guidance)
 
-    if face_count > 4:
-        guidance.append("Many faces were detected; identity matching will be more difficult.")
-        guidance.append("For best results, use a smaller group or provide separate reference photos.")
-        return "review_required", "medium", tuple(guidance)
+    if face_count > 1:
+        return "needs_better_photo", "high", (
+            "This version works with one person at a time. Crop to one person and upload again.",
+        )
 
     if largest_face_ratio < 0.06:
         guidance.append("Identity can be analyzed, but a closer face crop may improve likeness.")

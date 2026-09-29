@@ -27,6 +27,10 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
-      - name: Type-check and build
-        run: npm run build
+        run: npm ci
+      - name: Lint, type-check and build
+        run: npm run lint && npm run typecheck && npm run build
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+      - name: Test portrait workflow on desktop and mobile
+        run: npm run test:e2e

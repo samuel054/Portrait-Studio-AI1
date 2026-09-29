@@ -9,6 +9,8 @@ from app.candidate_sessions import candidate_session_store
 from app.comfyui import ComfyUIGenerator
 from app.generators import GenerationRequest, run_generation
 from app.refinement import build_refinement_plan
+from app.workflow_jobs import portrait_workflow_store
+from app.composition import background_session
 
 router = APIRouter(tags=["portrait-refinement"])
 
@@ -47,6 +49,9 @@ def refine_selected_candidate(
     )
 
     try:
+        original_bytes = candidate_session_store.source_bytes(session_id)
+        if request.background in {"transparent", "blur"}:
+            background_session()
         image_bytes = base64.b64decode(selected.image_base64, validate=True)
         plan = build_refinement_plan(
             style_id=request.style_id,
@@ -76,6 +81,19 @@ def refine_selected_candidate(
                 candidate_count=request.candidate_count,
             ),
         )
+        payload = generation.to_dict()
+        prompt_id = payload.get("request_payload", {}).get("prompt_id")
+        if not prompt_id:
+            raise RuntimeError("The refinement provider did not return a job ID.")
+        workflow = portrait_workflow_store.create(
+            filename="refinement.png", style_id=request.style_id, prompt_id=prompt_id,
+            stage="refinement_queued",
+            payload={
+                "plan": plan.to_dict(), "generation": payload,
+                "parent_session_id": session.id,
+                "_source_image_base64": base64.b64encode(original_bytes).decode("ascii"),
+            },
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -86,5 +104,6 @@ def refine_selected_candidate(
         "source_candidate_id": selected.id,
         "refinement_plan": plan.to_dict(),
         "generation": generation.to_dict(),
-        "next_step": "poll_refinement",
+        "job": workflow.to_dict(),
+        "next_step": "poll_portrait_job",
     }

@@ -22,12 +22,15 @@ services:
       PORTRAIT_API_KEY: ${PORTRAIT_API_KEY:?PORTRAIT_API_KEY is required}
       PORTRAIT_RATE_LIMIT_REQUESTS: ${PORTRAIT_RATE_LIMIT_REQUESTS:-120}
       PORTRAIT_RATE_LIMIT_WINDOW_SECONDS: ${PORTRAIT_RATE_LIMIT_WINDOW_SECONDS:-60}
-      COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://host.docker.internal:8188}
+      COMFYUI_BASE_URL: ${COMFYUI_DOCKER_BASE_URL:-http://host.docker.internal:8188}
+      COMFYUI_CHECKPOINT: ${COMFYUI_CHECKPOINT:-sd_xl_base_1.0.safetensors}
+      PORTRAIT_IDENTITY_MODEL_DIR: /models/identity
+      U2NET_HOME: /models/background
       COMFYUI_WORKFLOW_PATH: workflows/portrait_api.json
       COMFYUI_TIMEOUT_SECONDS: ${COMFYUI_TIMEOUT_SECONDS:-120}
     volumes:
       - portrait-data:/data
-      - insightface-models:/root/.insightface
+      - ./models:/models:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -40,11 +43,10 @@ services:
       BACKEND_URL: http://api:8000
       PORTRAIT_API_KEY: ${PORTRAIT_API_KEY:?PORTRAIT_API_KEY is required}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy
 
 volumes:
   portrait-data:
-  insightface-models:

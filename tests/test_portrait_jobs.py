@@ -34,6 +34,7 @@ class FakeIdentityReport:
 @dataclass
 class FakeEnhancementReport:
     identity_after: FakeIdentityReport
+    face_count_preserved: bool = True
 
     def to_dict(self) -> dict[str, object]:
         return {"identity_after": self.identity_after.to_dict()}
@@ -76,6 +77,7 @@ def _engine(tmp_path, store: PortraitWorkflowStore) -> WorkflowEngine:
 
 
 def test_portrait_job_runs_full_pipeline(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("app.main.require_identity_runtime", lambda: None)
     store = PortraitWorkflowStore(tmp_path / "workflows.db")
     monkeypatch.setattr("app.main.portrait_workflow_store", store)
     monkeypatch.setattr("app.main.analyze_image", lambda _data: FakeImageReport())

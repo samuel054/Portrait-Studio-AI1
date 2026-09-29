@@ -53,7 +53,11 @@ def render_selected_candidate(
 
     try:
         with Image.open(io.BytesIO(source_bytes)) as opened:
-            image = ImageOps.exif_transpose(opened).convert("RGB")
+            image = ImageOps.exif_transpose(opened).convert("RGBA")
+            if normalized_format == "jpeg":
+                flattened = Image.new("RGB", image.size, "white")
+                flattened.paste(image, mask=image.getchannel("A"))
+                image = flattened
     except (UnidentifiedImageError, OSError) as exc:
         raise ValueError("Selected candidate is not a readable image.") from exc
 

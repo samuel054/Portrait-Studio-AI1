@@ -20,7 +20,7 @@ COPY app ./app
 COPY workflows ./workflows
 
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install -e ".[identity]"
+    && python -m pip install -e ".[background]"
 
 EXPOSE 8000
 

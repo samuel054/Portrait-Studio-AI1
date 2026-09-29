@@ -1,67 +1,46 @@
 # Portrait Studio AI
 
-Identity-first portrait creation. The current working slice analyzes a photo, detects faces, measures identity readiness, and can apply conservative non-generative enhancement before style generation.
+A local portrait studio: upload one photo, choose framing/background/style, generate 2–4 options, review likeness-checked candidates, refine, and download PNG, JPEG, or WebP.
 
-## Current build
+## Start here
 
-- FastAPI service
-- JPG, PNG, and WEBP upload validation
-- Resolution, megapixel, blur, and lighting analysis
-- OpenCV frontal-face detection
-- Multiple-face bounding boxes and relative face-size measurement
-- Identity-readiness and identity-risk classification
-- Identity-safe enhancement using lighting correction, gentle denoising, conservative sharpening, and non-generative upscaling
-- Before-and-after quality and face-count reports
-- Automatic routing to `enhance`, `request_better_photo`, or `style_selection`
-- Unit tests for analysis, identity detection, and enhancement
+Follow [Local setup](docs/LOCAL_SETUP.md). No paid image API is required.
 
-## Run locally
+- **Web:** Next.js 15 / React 19, responsive desktop and mobile UI.
+- **API:** FastAPI, Pillow, OpenCV, SQLite session storage.
+- **Likeness:** local OpenCV YuNet + SFace models, installed with a checksum-verified setup script. InsightFace remains an optional adapter.
+- **Generation:** local ComfyUI, with a configurable SDXL image-to-image workflow.
+- **Background removal/blur:** optional local rembg / U2Net model.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
-```
+The application reports whether its engine and likeness models are ready. Photo analysis works before model setup. It does not fabricate portraits when the image engine is unavailable.
 
-Open the interactive API at `http://127.0.0.1:8000/docs`.
+## Working flow
 
-## Test
+1. Validate the photo, correct EXIF orientation, strip metadata, and check face visibility.
+2. Choose a compatible style, framing, background, intended use, and 2–4 candidates.
+3. Apply conservative enhancement and run the configured local workflow.
+4. Compare candidates with the original photo. Only candidates passing both quality and likeness checks are shown.
+5. Confirm A–D explicitly. Changing the choice requires confirmation again.
+6. Optionally request a finishing touch; refined options go through the same checks against the original source.
+7. Choose PNG/JPEG/WebP and a size, then download. Feedback is optional.
 
-```bash
-pytest
-```
+The current session can be restored after a browser refresh. The browser stores identifiers and options, not portrait pixels. Source/candidate data in the application's local SQLite databases expires after 60 minutes by default. Read [Privacy and limits](docs/PRIVACY_AND_LIMITS.md) for the separate ComfyUI disk retention policy.
 
-## Analyze a portrait
+## Validation
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/analyze \
-  -F "file=@portrait.jpg"
+python -m pip install -e ".[dev]"
+python -m pytest -q
+ruff check app tests
+cd frontend
+npm ci
+npm run lint
+npm run typecheck
+npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
-## Enhance a portrait
+Backend integration tests exercise the full HTTP workflow with a simulated image engine and face model. Browser tests cover desktop/mobile selection, refinement, export, validation, and refresh recovery. These tests do **not** establish real generated-image likeness.
 
-```bash
-curl -X POST http://127.0.0.1:8000/v1/enhance \
-  -F "file=@portrait.jpg" \
-  -o enhancement-response.json
-```
-
-The enhancement response contains:
-
-- the enhanced PNG encoded as Base64,
-- operations applied,
-- before-and-after quality measurements,
-- before-and-after identity-readiness reports,
-- a face-count preservation check,
-- and the recommended next step.
-
-The enhancer deliberately avoids generative face restoration. It improves presentation without inventing facial details or replacing the person's identity.
-
-## Privacy boundary
-
-Uploaded bytes are processed in memory. This build does not create a reusable face identity or permanently store biometric data.
-
-## Next build target
-
-Add the first curated style-selection contract and a prompt recipe builder for identity-preserving illustration generation.
+Before calling a model configuration ready for release, run the [real model smoke test](docs/LOCAL_SETUP.md#real-model-check) and evaluate it on consented portraits. The SDXL starter is an image-to-image baseline, not a trained identity guarantee. Quality thresholds are provisional; no recognition-rate benchmark is claimed.

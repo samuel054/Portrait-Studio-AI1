@@ -1,223 +1,273 @@
 "use client";
 
+import Link from "next/link";
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import {
-  AnalysisResponse,
-  CandidateSession,
-  GenerationResult,
-  PortraitJob,
-  PortraitStyle,
-  RenderResult,
-  analyzePhoto,
-  createPortraitJob,
-  getCandidateSession,
-  getGeneration,
-  getPortraitJob,
-  getStyles,
-  refineCandidate,
-  renderCandidate,
-  selectCandidate,
-  submitFeedback,
+  AnalysisResponse, CandidateSession, PortraitJob, PortraitOptions, PortraitStyle, RenderResult, RuntimeStatus,
+  analyzePhoto, createPortraitJob, getCandidateSession, getPortraitJob, getRuntime, getStyles,
+  refineCandidate, renderCandidate, selectCandidate, submitFeedback,
 } from "@/lib/api";
 
-const ALLOWED = ["image/jpeg", "image/png", "image/webp"];
-const MAX_SIZE = 20 * 1024 * 1024;
-const TERMINAL_FAILURES = new Set(["failed", "cancelled", "expired"]);
-const REFINEMENT_OPERATIONS = ["background", "lighting", "color", "clothing", "cleanup"];
+const STORAGE_KEY = "portrait-studio-workflow-v1";
+const TERMINAL = new Set(["failed", "cancelled", "completed", "awaiting_selection", "rendering"]);
+const DEFAULT_OPTIONS: PortraitOptions = { crop: "original", background: "keep", output_type: "social", candidate_count: 2 };
+const LABELS: Record<string, string> = {
+  original: "Keep photo framing", face: "Face portrait", half_body: "Upper body", full_body: "Full photo",
+  keep: "Keep background", blur: "Soft blur", replace: "New studio setting", transparent: "Transparent", surprise: "Let the style decide",
+  social: "Social profile", canvas: "Canvas print", frame: "Wall frame", gift: "Gift", sticker: "Sticker",
+};
+const REFINEMENTS = [
+  { id: "lighting", label: "Softer light", instruction: "Soften the lighting and reduce harsh shadows, preserving the face." },
+  { id: "color", label: "Warmer colors", instruction: "Gently warm the overall color palette while preserving the natural skin tone." },
+  { id: "background", label: "Simpler background", instruction: "Simplify the background to a quiet neutral setting, keeping the subject unchanged." },
+  { id: "cleanup", label: "Clean up details", instruction: "Clean up small stray marks in the background without changing the face or body." },
+];
+const STAGES: Record<string, string> = {
+  generation_queued: "Waiting for the image engine", refinement_queued: "Waiting to refine your portrait",
+  queued: "Waiting for the image engine", running: "Creating portraits", processing: "Processing portraits",
+  checking_likeness: "Checking likeness against your original photo", candidates_ready: "Portraits ready to choose",
+  generation_retry_scheduled: "Reconnecting to the image engine", candidate_selected: "Portrait selected", render_completed: "Export ready",
+};
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : "Something went wrong. Please try again.";
 
 export default function HomePage() {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const epoch = useRef(0);
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [styles, setStyles] = useState<PortraitStyle[]>([]);
-  const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
-  const [stylesError, setStylesError] = useState("");
-  const [status, setStatus] = useState<"idle" | "analyzing" | "done" | "error">("idle");
-  const [message, setMessage] = useState("");
+  const [styleId, setStyleId] = useState("");
+  const [options, setOptions] = useState(DEFAULT_OPTIONS);
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const [runtimeError, setRuntimeError] = useState("");
+  const [checkingRuntime, setCheckingRuntime] = useState(false);
   const [job, setJob] = useState<PortraitJob | null>(null);
   const [session, setSession] = useState<CandidateSession | null>(null);
-  const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const [render, setRender] = useState<RenderResult | null>(null);
-  const [generationError, setGenerationError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [rating, setRating] = useState(5);
-  const [feedbackComment, setFeedbackComment] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [restored, setRestored] = useState(false);
+  const [format, setFormat] = useState("png");
+  const [size, setSize] = useState(0);
+  const [refinement, setRefinement] = useState("lighting");
+  const [rating, setRating] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState("");
   const [feedbackSaved, setFeedbackSaved] = useState(false);
-  const [refinementOperation, setRefinementOperation] = useState("lighting");
-  const [refinementInstruction, setRefinementInstruction] = useState("");
-  const [refinement, setRefinement] = useState<GenerationResult | null>(null);
+
+  const generating = Boolean(job && !TERMINAL.has(job.status));
+  const locked = Boolean(busy) || generating;
+  const style = styles.find((item) => item.id === styleId);
+  const confirmed = Boolean(selected && session?.selected_candidate_id === selected);
+  const acceptedPhoto = analysis && analysis.next_step !== "request_better_photo";
 
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
 
-  useEffect(() => {
-    if (!analysis || analysis.next_step === "request_better_photo") return;
-    getStyles().then((items) => {
-      setStyles(items);
-      setSelectedStyle((current) => current ?? items[0]?.id ?? null);
-    }).catch((error: unknown) => {
-      setStylesError(error instanceof Error ? error.message : "Style catalog unavailable.");
-    });
-  }, [analysis]);
+  async function checkRuntime() {
+    setCheckingRuntime(true); setRuntimeError("");
+    try { setRuntime(await getRuntime()); }
+    catch (err) { setRuntime(null); setRuntimeError(errorMessage(err)); }
+    finally { setCheckingRuntime(false); }
+  }
 
   useEffect(() => {
-    if (!job || job.candidate_session_id || TERMINAL_FAILURES.has(job.status)) return;
-    let cancelled = false;
-    const timer = window.setInterval(async () => {
+    let disposed = false;
+    getStyles().then((items) => { if (!disposed) setStyles(items); }).catch((err) => { if (!disposed) setError(errorMessage(err)); });
+    void checkRuntime();
+    async function restore() {
       try {
-        const next = await getPortraitJob(job.id, true);
-        if (cancelled) return;
-        setJob(next);
-        if (next.candidate_session_id) {
-          const candidates = await getCandidateSession(next.candidate_session_id);
-          if (!cancelled) {
-            setSession(candidates);
-            setSelectedCandidate(candidates.candidates.find((item) => item.recommended)?.id ?? candidates.candidates[0]?.id ?? null);
-          }
-        } else if (TERMINAL_FAILURES.has(next.status)) {
-          setGenerationError(next.error_message ?? "Portrait generation failed.");
+        const raw = window.sessionStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw) as { jobId?: string; sessionId?: string; styleId?: string; options?: PortraitOptions };
+        if (saved.styleId) setStyleId(saved.styleId);
+        if (saved.options) setOptions(saved.options);
+        if (saved.sessionId) {
+          const previous = await getCandidateSession(saved.sessionId);
+          if (disposed) return;
+          setSession(previous); setSelected(previous.selected_candidate_id);
         }
-      } catch (error) {
-        if (!cancelled) setGenerationError(error instanceof Error ? error.message : "Generation status could not be refreshed.");
-      }
-    }, 2000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [job]);
+        if (saved.jobId) {
+          const previous = await getPortraitJob(saved.jobId);
+          if (!disposed) setJob(previous);
+        }
+        if (!disposed) setNotice("Your current portrait session has been restored.");
+      } catch (err) {
+        if (!disposed) setNotice(errorMessage(err));
+        try { window.sessionStorage.removeItem(STORAGE_KEY); } catch { /* Private browsing can disable storage. */ }
+      } finally { if (!disposed) setRestored(true); }
+    }
+    void restore();
+    return () => { disposed = true; };
+  }, []);
 
   useEffect(() => {
-    if (!refinement || refinement.status === "completed" || refinement.status === "failed") return;
-    let cancelled = false;
-    const timer = window.setInterval(async () => {
-      try {
-        const next = await getGeneration(refinement.prompt_id);
-        if (!cancelled) setRefinement(next);
-      } catch (error) {
-        if (!cancelled) setGenerationError(error instanceof Error ? error.message : "Refinement status could not be refreshed.");
-      }
-    }, 2000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [refinement]);
+    if (!restored) return;
+    try {
+      if (job || session) window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ jobId: job?.id, sessionId: session?.id, styleId, options }));
+      else window.sessionStorage.removeItem(STORAGE_KEY);
+    } catch { /* The workflow still works when browser storage is unavailable. */ }
+  }, [job, session, styleId, options, restored]);
 
-  function resetGeneration() {
-    setJob(null); setSession(null); setSelectedCandidate(null); setRender(null); setGenerationError(""); setBusy(false);
-    setFeedbackSaved(false); setFeedbackComment(""); setRating(5); setRefinement(null); setRefinementInstruction("");
+  const jobId = job?.id;
+  useEffect(() => {
+    if (!jobId) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    async function poll() {
+      try {
+        const current = await getPortraitJob(jobId!);
+        if (disposed) return;
+        setJob(current);
+        if (current.candidate_session_id) {
+          const candidates = await getCandidateSession(current.candidate_session_id);
+          if (disposed) return;
+          setSession(candidates); setSelected(candidates.selected_candidate_id); setRender(null);
+          setError(""); return;
+        }
+        if (current.status === "failed" || current.status === "cancelled") {
+          setError(current.error?.message ?? "No portraits passed the checks. Try another photo or style."); return;
+        }
+        if (current.status === "completed") return;
+        failures = 0;
+      } catch (err) {
+        if (disposed) return;
+        setError(errorMessage(err));
+        failures += 1;
+        if (failures >= 5) { setJob((previous) => previous ? { ...previous, status: "failed" } : null); return; }
+      }
+      if (!disposed) timer = setTimeout(poll, 2000);
+    }
+    void poll();
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [jobId]);
+
+  function resetResults() {
+    setJob(null); setSession(null); setSelected(null); setRender(null); setError("");
+    setRating(null); setFeedback(""); setFeedbackSaved(false); setNotice("");
   }
 
   function chooseFile(next: File) {
-    setAnalysis(null); setStyles([]); setSelectedStyle(null); setStylesError(""); setMessage(""); setStatus("idle"); resetGeneration();
-    if (!ALLOWED.includes(next.type)) { setStatus("error"); setMessage("Upload a JPG, PNG, or WEBP image."); return; }
-    if (next.size > MAX_SIZE) { setStatus("error"); setMessage("The photo must be smaller than 20 MB."); return; }
-    if (preview) URL.revokeObjectURL(preview);
+    if (locked) return;
+    epoch.current += 1;
+    resetResults(); setAnalysis(null); setFile(null); setPreview(null); setStyleId("");
+    if (!["image/jpeg", "image/png", "image/webp"].includes(next.type)) { setError("Choose a JPG, PNG, or WebP photo."); return; }
+    if (!next.size || next.size > 20 * 1024 * 1024) { setError("Choose a nonempty photo smaller than 20 MB."); return; }
     setFile(next); setPreview(URL.createObjectURL(next));
   }
-
-  function onInput(event: ChangeEvent<HTMLInputElement>) { const selected = event.target.files?.[0]; if (selected) chooseFile(selected); }
-  function onDrop(event: DragEvent<HTMLDivElement>) { event.preventDefault(); setDragging(false); const selected = event.dataTransfer.files?.[0]; if (selected) chooseFile(selected); }
-
-  async function runAnalysis() {
+  function onInput(event: ChangeEvent<HTMLInputElement>) { const next = event.target.files?.[0]; if (next) chooseFile(next); event.target.value = ""; }
+  function onDrop(event: DragEvent<HTMLDivElement>) { event.preventDefault(); setDragging(false); const next = event.dataTransfer.files[0]; if (next) chooseFile(next); }
+  function chooseStyle(next: PortraitStyle) {
+    if (locked) return;
+    resetResults(); setStyleId(next.id);
+    const backgrounds = next.background_modes.filter((item) => runtime?.background_removal || !["blur", "transparent"].includes(item));
+    setOptions((old) => ({ ...old, background: backgrounds.includes(old.background) ? old.background : backgrounds[0], output_type: next.output_types.includes(old.output_type) ? old.output_type : next.output_types[0] }));
+  }
+  async function analyze() {
     if (!file) return;
-    setStatus("analyzing"); setMessage("Checking face visibility, sharpness, lighting, and identity readiness…");
+    const current = epoch.current;
+    resetResults(); setBusy("analyze");
     try {
-      const result = await analyzePhoto(file); setAnalysis(result); setStatus("done");
-      setMessage(result.next_step === "request_better_photo" ? "This photo needs a clearer face before generation." : result.next_step === "enhance" ? "Photo accepted. We will enhance it before generation." : "Photo accepted and ready for style selection.");
-    } catch (error) { setStatus("error"); setMessage(error instanceof Error ? error.message : "Analysis failed."); }
+      const result = await analyzePhoto(file);
+      if (epoch.current !== current) return;
+      setAnalysis(result);
+      if (result.next_step !== "request_better_photo" && styles[0]) chooseStyle(styles[0]);
+    } catch (err) { if (epoch.current === current) setError(errorMessage(err)); }
+    finally { if (epoch.current === current) setBusy(""); }
   }
-
-  async function startGeneration() {
-    if (!file || !selectedStyle) return;
-    resetGeneration(); setBusy(true);
-    try { setJob(await createPortraitJob(file, selectedStyle)); }
-    catch (error) { setGenerationError(error instanceof Error ? error.message : "Generation could not start."); }
-    finally { setBusy(false); }
+  async function generate() {
+    if (!file || !styleId || !acceptedPhoto) return;
+    resetResults(); setBusy("generate");
+    try { setJob(await createPortraitJob(file, styleId, options)); }
+    catch (err) { setError(errorMessage(err)); }
+    finally { setBusy(""); }
   }
-
-  async function confirmSelection() {
-    if (!session || !selectedCandidate) return;
-    setBusy(true); setGenerationError("");
-    try {
-      const updated = await selectCandidate(session.id, selectedCandidate);
-      setSession(updated);
-      setFeedbackSaved(false);
-    } catch (error) { setGenerationError(error instanceof Error ? error.message : "Portrait selection could not be saved."); }
-    finally { setBusy(false); }
+  async function confirm() {
+    if (!session || !selected) return;
+    setBusy("select"); setError("");
+    try { setSession(await selectCandidate(session.id, selected)); setFeedbackSaved(false); }
+    catch (err) { setError(errorMessage(err)); }
+    finally { setBusy(""); }
   }
-
+  async function refine() {
+    if (!session || !confirmed) return;
+    const choice = REFINEMENTS.find((item) => item.id === refinement)!;
+    setBusy("refine"); setError(""); setRender(null);
+    try { setJob(await refineCandidate(session.id, styleId, choice.id, choice.instruction, options)); }
+    catch (err) { setError(errorMessage(err)); }
+    finally { setBusy(""); }
+  }
+  async function exportPortrait() {
+    if (!session || !confirmed) return;
+    setBusy("export"); setError("");
+    try { setRender(await renderCandidate(session.id, { output_format: format, max_dimension: size || null })); }
+    catch (err) { setError(errorMessage(err)); }
+    finally { setBusy(""); }
+  }
   async function saveFeedback(accepted: boolean) {
-    if (!session?.selected_candidate_id) return;
-    setBusy(true); setGenerationError("");
-    try {
-      await submitFeedback(session.id, session.selected_candidate_id, rating, accepted, feedbackComment);
-      setFeedbackSaved(true);
-    } catch (error) { setGenerationError(error instanceof Error ? error.message : "Feedback could not be saved."); }
-    finally { setBusy(false); }
+    if (!session || !selected || !rating) return;
+    setBusy("feedback"); setError("");
+    try { await submitFeedback(session.id, selected, rating, accepted, feedback); setFeedbackSaved(true); }
+    catch (err) { setError(errorMessage(err)); }
+    finally { setBusy(""); }
   }
-
-  async function startRefinement() {
-    if (!session || !selectedStyle || !refinementInstruction.trim()) return;
-    setBusy(true); setGenerationError(""); setRefinement(null);
-    try { setRefinement(await refineCandidate(session.id, selectedStyle, refinementOperation, refinementInstruction.trim())); }
-    catch (error) { setGenerationError(error instanceof Error ? error.message : "Refinement could not start."); }
-    finally { setBusy(false); }
-  }
-
-  async function finishPortrait() {
-    if (!session?.selected_candidate_id) return;
-    setBusy(true); setGenerationError("");
-    try {
-      if (!feedbackSaved) await submitFeedback(session.id, session.selected_candidate_id, rating, true, feedbackComment);
-      setRender(await renderCandidate(session.id));
-      setFeedbackSaved(true);
-    } catch (error) { setGenerationError(error instanceof Error ? error.message : "Portrait could not be rendered."); }
-    finally { setBusy(false); }
-  }
-
-  function downloadRender() {
+  function download() {
     if (!render) return;
-    const anchor = document.createElement("a");
-    anchor.href = `data:${render.content_type};base64,${render.image_base64}`;
-    anchor.download = render.filename || "portrait-studio-ai.png";
-    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    const bytes = Uint8Array.from(atob(render.image_base64), (char) => char.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: render.content_type }));
+    const link = document.createElement("a"); link.href = url; link.download = render.filename;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
-  const canChooseStyle = analysis && analysis.next_step !== "request_better_photo";
-  const progress = Math.max(0, Math.min(100, job?.progress ?? 0));
-  const confirmed = Boolean(session?.selected_candidate_id);
+  return <main className="page"><div className="shell">
+    <header className="header"><Link href="/" className="brand">Portrait Studio AI</Link><span className="badge">Made for your face</span></header>
+    <section className="hero">
+      <div><div className="eyebrow">One photo. Your own style.</div><h1>Art that still<br />looks like you.</h1>
+        <p className="lede">Choose a portrait style, compare the results, and make it yours. Each portrait is checked against your original photo before you see it.</p>
+        <div className="promise"><span>Local processing</span><span>Likeness checks</span><span>Your final choice</span></div>
+      </div>
+      <div className="card upload">
+        <div className={`dropzone ${dragging ? "active" : ""} ${preview ? "hasImage" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
+          {preview ? <><img className="preview" src={preview} alt="Your original portrait" /><div className="overlay"><strong>{file?.name}</strong></div></>
+            : <div><div className="uploadIcon" aria-hidden="true">↑</div><strong>Start with one clear portrait</strong><p className="fineprint">One person · JPG, PNG, or WebP · Up to 20 MB</p><div className="actions"><button className="primary" disabled={locked} onClick={() => input.current?.click()}>Choose photo</button></div></div>}
+        </div>
+        <input ref={input} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={onInput} aria-label="Upload portrait" />
+        {preview && <div className="actions"><button className="secondary" disabled={locked} onClick={() => input.current?.click()}>Replace photo</button><button className="primary" disabled={locked} onClick={analyze}>{busy === "analyze" ? "Checking photo…" : "Analyze photo"}</button></div>}
+        {analysis && <div className={`status ${acceptedPhoto ? "success" : "error"}`} role="status"><strong>{acceptedPhoto ? "Your photo is ready" : "Please try a clearer photo"}</strong><p>{analysis.identity.guidance.join(" ")}</p><span>{analysis.analysis.width} × {analysis.analysis.height} · {analysis.identity.face_count} face{analysis.identity.face_count === 1 ? "" : "s"}</span>{analysis.next_step === "enhance" && <p>We’ll gently improve the lighting and clarity before generating.</p>}</div>}
+      </div>
+    </section>
 
-  return (
-    <main className="page"><div className="shell">
-      <header className="header"><div className="brand">Portrait Studio AI</div><div className="badge">Identity-first · Open source</div></header>
-      <section className="hero"><div><div className="eyebrow">Your face stays your face</div><h1>Turn one photo into art that still looks like you.</h1><p className="lede">Upload a portrait and we will check image quality and identity readiness before any generation begins. No blind face replacement. No generic stranger wearing your clothes.</p><div className="promise"><span>Automatic quality check</span><span>Identity-safe ranking</span><span>You choose A, B, C, or D</span></div></div>
-        <div className="card upload"><div className={`dropzone ${dragging ? "active" : ""} ${preview ? "hasImage" : ""}`} onDragEnter={(e) => { e.preventDefault(); setDragging(true); }} onDragOver={(e) => e.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
-          {preview ? <><img className="preview" src={preview} alt="Selected portrait preview" /><div className="overlay"><strong>{file?.name}</strong><div className="fineprint">{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : ""}</div></div></> : <div><div className="uploadIcon">↑</div><strong>Drop your portrait here</strong><p className="fineprint">JPG, PNG, or WEBP · Maximum 20 MB</p><div className="actions"><button className="primary" onClick={() => inputRef.current?.click()}>Choose photo</button></div></div>}
-        </div><input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={onInput} />
-        {preview && <div className="actions"><button className="secondary" onClick={() => inputRef.current?.click()}>Replace photo</button><button className="primary" onClick={runAnalysis} disabled={status === "analyzing"}>{status === "analyzing" ? "Analyzing…" : "Analyze photo"}</button></div>}
-        {status !== "idle" && <div className={`status ${status === "error" ? "error" : status === "done" ? "success" : ""}`}>{message}{analysis && <div className="fineprint">{analysis.identity.face_count} face detected · {analysis.analysis.megapixels.toFixed(1)} MP · identity {analysis.identity.identity_readiness}</div>}</div>}</div>
-      </section>
+    <aside className="runtimeBar" aria-label="Image engine status"><div><strong>{checkingRuntime ? "Checking your image engine…" : runtime?.ready ? "Image engine ready" : "Local model setup needed"}</strong><p className="fineprint">{runtimeError || (runtime?.ready ? "Ready to create portraits on this computer." : "Photo analysis works now. Connect the local models to generate portraits.")}</p></div><button className="secondary" disabled={checkingRuntime} onClick={checkRuntime}>Check connection</button>
+      {!runtime?.ready && <details><summary>Show setup details</summary><ul>{runtime?.checks.map((item) => <li key={item.id}>{item.ready ? "✓ " : "• "}{item.message}</li>)}</ul><a href="https://github.com/samuel054/Portrait-Studio-AI1/blob/codex/finish-portrait-studio-mvp/docs/LOCAL_SETUP.md" target="_blank" rel="noreferrer">Open local setup guide</a></details>}
+    </aside>
+    {notice && <p className="status" role="status">{notice}</p>}
+    {error && <div className="status error" role="alert">{error}{job?.status === "failed" && file && <div className="actions"><button className="secondary" onClick={generate} disabled={locked || !runtime?.ready}>Try generation again</button></div>}</div>}
 
-      {canChooseStyle && <section className="styleSection" aria-labelledby="style-title"><div className="sectionHeading"><div><div className="eyebrow">Step 2</div><h2 id="style-title">Choose your portrait style</h2></div><p>Every option keeps identity preservation active.</p></div>
-        {stylesError ? <div className="status error">{stylesError}</div> : styles.length === 0 ? <div className="status">Loading styles…</div> : <div className="styleGrid">{styles.map((style) => <button key={style.id} type="button" className={`styleCard ${selectedStyle === style.id ? "selected" : ""}`} onClick={() => { setSelectedStyle(style.id); resetGeneration(); }} aria-pressed={selectedStyle === style.id}><span className="styleCategory">{style.category}</span><strong>{style.name}</strong><span>{style.description}</span><small>Identity {style.identity_priority.replace("_", " ")} · pose preserved · clothing preserved</small></button>)}</div>}
-        {selectedStyle && !job && <div className="styleActions"><span>Selected: <strong>{styles.find((style) => style.id === selectedStyle)?.name}</strong></span><button className="primary" type="button" onClick={startGeneration} disabled={busy}>{busy ? "Starting…" : "Continue to generation"}</button></div>}
-      </section>}
+    {(acceptedPhoto || session || job) && <section className="styleSection" aria-labelledby="styles-title"><div className="sectionHeading"><div><div className="eyebrow">01 / Make it yours</div><h2 id="styles-title">Choose a style</h2></div><p>Likeness checking stays on for every style.</p></div>
+      <div className="styleGrid">{styles.map((item) => <button type="button" key={item.id} disabled={locked || !file} className={`styleCard ${styleId === item.id ? "selected" : ""}`} aria-pressed={styleId === item.id} onClick={() => chooseStyle(item)}><div className={`styleSwatch ${item.category}`} aria-hidden="true"><span>{item.category === "painting" ? "◌" : item.category === "chibi" ? "✦" : "◈"}</span></div><span className="styleCategory">{item.category}</span><strong>{item.name}</strong><span>{item.description}</span></button>)}</div>
+      {style && <div className="optionsPanel card"><fieldset disabled={locked || Boolean(session)}><legend>Framing</legend><div className="choices">{["original", "face", "half_body"].map((id) => <button type="button" key={id} className={options.crop === id ? "primary" : "secondary"} aria-pressed={options.crop === id} onClick={() => setOptions({ ...options, crop: id })}>{LABELS[id]}</button>)}</div></fieldset>
+        <fieldset disabled={locked || Boolean(session)}><legend>Background</legend><div className="choices">{style.background_modes.map((id) => <button type="button" key={id} disabled={["blur", "transparent"].includes(id) && !runtime?.background_removal} title={["blur", "transparent"].includes(id) && !runtime?.background_removal ? "Requires the optional local background model" : undefined} className={options.background === id ? "primary" : "secondary"} aria-pressed={options.background === id} onClick={() => setOptions({ ...options, background: id })}>{LABELS[id]}</button>)}</div></fieldset>
+        <fieldset disabled={locked || Boolean(session)}><legend>Where will you use it?</legend><div className="choices">{style.output_types.map((id) => <button type="button" key={id} className={options.output_type === id ? "primary" : "secondary"} aria-pressed={options.output_type === id} onClick={() => setOptions({ ...options, output_type: id })}>{LABELS[id]}</button>)}</div></fieldset>
+        <fieldset disabled={locked || Boolean(session)}><legend>How many options?</legend><div className="choices">{[2, 3, 4].map((count) => <button type="button" key={count} className={options.candidate_count === count ? "primary" : "secondary"} aria-pressed={options.candidate_count === count} onClick={() => setOptions({ ...options, candidate_count: count })}>{count} portraits</button>)}</div></fieldset>
+        {!session && <div className="styleActions"><span>Ready for <strong>{style.name}</strong></span><button className="primary" disabled={locked || !runtime?.ready || !file} onClick={generate}>{busy === "generate" ? "Preparing your photo…" : "Generate portraits"}</button></div>}
+      </div>}
+    </section>}
 
-      {job && !session && <section className="styleSection"><div className="eyebrow">Step 3</div><h2>Creating identity-safe candidates</h2><p>Stage: <strong>{job.stage}</strong> · {progress}%</p><progress value={progress} max={100} style={{ width: "100%" }} /><p className="fineprint">We rank generated portraits by likeness before showing them to you.</p></section>}
+    {generating && <section className="styleSection progressPanel" aria-live="polite"><div className="eyebrow">02 / Creating your portraits</div><h2>{STAGES[job!.stage] ?? "Working on your portraits"}</h2><div className="indeterminate" aria-hidden="true" /><p className="fineprint">The time depends on your computer. You can refresh this page and return to this session.</p></section>}
 
-      {session && !render && <section className="styleSection"><div className="eyebrow">Step 4</div><h2>Choose the portrait that looks most like you</h2><div className="styleGrid">{session.candidates.map((candidate) => <button key={candidate.id} type="button" className={`styleCard ${selectedCandidate === candidate.id ? "selected" : ""}`} onClick={() => { setSelectedCandidate(candidate.id); setFeedbackSaved(false); }} aria-pressed={selectedCandidate === candidate.id}><img src={`data:${candidate.content_type};base64,${candidate.image_base64}`} alt={`Portrait candidate ${candidate.id}`} style={{ width: "100%", borderRadius: 12 }} /><strong>{candidate.id}{candidate.recommended ? " · Recommended" : ""}</strong><span>Identity score {(candidate.score * 100).toFixed(0)}%</span><small>{candidate.reasons.join(" · ")}</small></button>)}</div>
-        {!confirmed ? <div className="styleActions"><span>Selected candidate: <strong>{selectedCandidate}</strong></span><button className="primary" onClick={confirmSelection} disabled={!selectedCandidate || busy}>{busy ? "Saving…" : "Confirm selection"}</button></div> : <div className="card" style={{ padding: 20, marginTop: 24 }}><div className="eyebrow">Step 5</div><h2>Refine, rate, or finish</h2><p className="fineprint">Identity remains locked during refinement. Face-changing requests are rejected by the backend.</p>
-          <div className="actions" style={{ flexWrap: "wrap" }}>{REFINEMENT_OPERATIONS.map((item) => <button key={item} className={refinementOperation === item ? "primary" : "secondary"} onClick={() => setRefinementOperation(item)}>{item}</button>)}</div>
-          <textarea value={refinementInstruction} onChange={(e) => setRefinementInstruction(e.target.value)} placeholder="Example: soften the lighting and reduce harsh shadows" maxLength={500} style={{ width: "100%", minHeight: 90, marginTop: 12 }} />
-          <div className="actions"><button className="secondary" onClick={startRefinement} disabled={busy || !refinementInstruction.trim()}>{busy ? "Working…" : "Refine selected portrait"}</button></div>
-          {refinement && <div className="status">Refinement: <strong>{refinement.status}</strong>{refinement.error ? ` · ${refinement.error}` : ""}</div>}
-          {refinement?.status === "completed" && refinement.images.length > 0 && <div className="styleGrid">{refinement.images.map((image, index) => <div className="styleCard" key={`${image.filename}-${index}`}><img src={`data:${image.content_type};base64,${image.image_base64}`} alt={`Refined portrait ${index + 1}`} style={{ width: "100%", borderRadius: 12 }} /><strong>Refined option {index + 1}</strong><small>Preview only · original selected candidate remains identity anchor</small></div>)}</div>}
-          <div style={{ marginTop: 20 }}><strong>How good is this result?</strong><div className="actions">{[1,2,3,4,5].map((value) => <button key={value} className={rating === value ? "primary" : "secondary"} onClick={() => setRating(value)}>{value}★</button>)}</div><textarea value={feedbackComment} onChange={(e) => setFeedbackComment(e.target.value)} placeholder="Optional feedback" maxLength={1000} style={{ width: "100%", minHeight: 70 }} /></div>
-          <div className="styleActions"><button className="secondary" onClick={() => saveFeedback(false)} disabled={busy}>{feedbackSaved ? "Feedback saved" : "Save feedback"}</button><button className="primary" onClick={finishPortrait} disabled={busy}>{busy ? "Rendering…" : "Finish portrait"}</button></div>
-        </div>}
-      </section>}
-
-      {render && <section className="styleSection"><div className="eyebrow">Complete</div><h2>Your portrait is ready</h2><div className="card" style={{ padding: 16 }}><img src={`data:${render.content_type};base64,${render.image_base64}`} alt="Final rendered portrait" style={{ width: "100%", maxHeight: 760, objectFit: "contain", borderRadius: 16 }} /><p className="fineprint">{render.width} × {render.height} · {render.filename}</p></div><div className="styleActions"><button className="secondary" onClick={resetGeneration}>Generate another style</button><button className="primary" onClick={downloadRender}>Download portrait</button></div></section>}
-      {generationError && <div className="status error">{generationError}</div>}
-
-      <section className="steps" aria-label="How it works"><article className="card step"><strong>1. We inspect first</strong><p>Blur, lighting, resolution, visible faces, and identity risk are checked before generation.</p></article><article className="card step"><strong>2. We generate safely</strong><p>Open-source models create several candidates while identity rules stay active.</p></article><article className="card step"><strong>3. You make the call</strong><p>Only safe candidates are shown. Pick A, B, C, or D, then refine and export.</p></article></section>
-    </div></main>
-  );
+    {session && <section className="styleSection" aria-labelledby="candidates-title"><div className="eyebrow">03 / You choose</div><h2 id="candidates-title">Which portrait feels like you?</h2><p className="lede small">{session.candidates.length} portrait{session.candidates.length === 1 ? "" : "s"} passed the checks. Compare the face and details before choosing.</p>
+      <div className="candidateGrid">{session.candidates.map((candidate) => <button key={candidate.id} type="button" disabled={locked} className={`styleCard candidate ${selected === candidate.id ? "selected" : ""}`} aria-pressed={selected === candidate.id} onClick={() => { setSelected(candidate.id); setRender(null); setFeedbackSaved(false); }}><img src={`data:${candidate.content_type};base64,${candidate.image_base64}`} alt={`Portrait option ${candidate.id}`} /><strong>Option {candidate.id}{candidate.recommended ? " · Recommended" : ""}</strong><span>Quality and likeness: {candidate.score.toFixed(0)}/100</span></button>)}</div>
+      <div className="styleActions"><span>{selected ? `Your choice: ${selected}` : "Choose a portrait to continue."}</span><button className="primary" onClick={confirm} disabled={locked || !selected || confirmed}>{busy === "select" ? "Saving choice…" : confirmed ? `Option ${selected} confirmed` : "Confirm selection"}</button></div>
+      {confirmed && <div className="finishGrid">
+        <div className="card optionsPanel"><div className="eyebrow">Optional</div><h3>A finishing touch</h3><p className="fineprint">Refined options are checked against your original photo again.</p><div className="choices">{REFINEMENTS.map((item) => <button key={item.id} disabled={locked} aria-pressed={refinement === item.id} className={refinement === item.id ? "primary" : "secondary"} onClick={() => setRefinement(item.id)}>{item.label}</button>)}</div><button className="secondary wide" disabled={locked || !runtime?.ready} onClick={refine}>{busy === "refine" || generating ? "Refining…" : "Create refined options"}</button></div>
+        <div className="card optionsPanel"><div className="eyebrow">04 / Take it with you</div><h3>Export your portrait</h3><fieldset disabled={locked}><legend>File format</legend><div className="choices">{["png", "jpeg", "webp"].map((item) => <button key={item} aria-pressed={format === item} className={format === item ? "primary" : "secondary"} onClick={() => { setFormat(item); setRender(null); }}>{item.toUpperCase()}</button>)}</div></fieldset><label htmlFor="export-size">Image size</label><select id="export-size" value={size} disabled={locked} onChange={(event) => { setSize(Number(event.target.value)); setRender(null); }}><option value={0}>Original resolution</option><option value={1024}>Fit within 1024 px</option><option value={2048}>Fit within 2048 px</option></select><p className="fineprint">Keeps proportions. Smaller originals are not enlarged.{format === "jpeg" ? " Transparency becomes white in JPEG." : ""}</p><button className="primary wide" disabled={locked} onClick={exportPortrait}>{busy === "export" ? "Preparing file…" : "Prepare download"}</button>{render && <div className="status success" role="status"><strong>{render.width} × {render.height} · {render.content_type.replace("image/", "").toUpperCase()}</strong><button className="primary wide" onClick={download}>Download portrait</button></div>}</div>
+      </div>}
+      {confirmed && <details className="feedbackPanel"><summary>Help improve the results (optional)</summary><div className="choices" role="group" aria-label="Rate your portrait">{[1, 2, 3, 4, 5].map((value) => <button key={value} disabled={locked} className={rating === value ? "primary" : "secondary"} aria-pressed={rating === value} onClick={() => { setRating(value); setFeedbackSaved(false); }}>{value} ★</button>)}</div><label htmlFor="feedback">Your comments</label><textarea id="feedback" value={feedback} maxLength={1000} onChange={(event) => { setFeedback(event.target.value); setFeedbackSaved(false); }} /><div className="choices"><button className="secondary" disabled={locked || !rating || feedbackSaved} onClick={() => saveFeedback(true)}>I like this result</button><button className="secondary" disabled={locked || !rating || feedbackSaved} onClick={() => saveFeedback(false)}>Needs improvement</button></div>{feedbackSaved && <p role="status">Thank you. Your feedback was saved.</p>}</details>}
+    </section>}
+    <footer className="footer"><p>Portraits stay in this local session for up to 60 minutes. Download the ones you want to keep.</p><p>No portrait or face data is included in feedback.</p></footer>
+  </div></main>;
 }
